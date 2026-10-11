@@ -11,6 +11,7 @@ type Dependencies = {
 const UNKNOWN = { state: 'unknown' } as const;
 const STATUSES = new Set(['queued', 'waiting', 'pending', 'requested', 'in_progress']);
 const MAX_BODY_CHARACTERS = 4 * 1024 * 1024;
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 function deadlineError() { return new Error('QA inventory unavailable'); }
 
@@ -31,7 +32,40 @@ async function withinDeadline<T>(operation: Promise<T>, signal: AbortSignal): Pr
   }
 }
 
-/** Private, read-only adapter. No route imports it until the dispatch guard is reviewed. */
+/** Bound reads before decoding and never wait for noncooperative stream cleanup. */
+async function readBoundedBody(response: Response, signal: AbortSignal): Promise<string> {
+  if (!response.body) throw deadlineError();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const parts: string[] = [];
+  let bytes = 0;
+  let characters = 0;
+  let complete = false;
+  try {
+    while (true) {
+      const chunk = await withinDeadline(reader.read(), signal);
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > MAX_BODY_BYTES) throw deadlineError();
+      const part = decoder.decode(chunk.value, { stream: true });
+      characters += part.length;
+      if (characters > MAX_BODY_CHARACTERS) throw deadlineError();
+      parts.push(part);
+    }
+    const tail = decoder.decode();
+    if (characters + tail.length > MAX_BODY_CHARACTERS) throw deadlineError();
+    parts.push(tail);
+    complete = true;
+    return parts.join('');
+  } finally {
+    if (!complete) {
+      try { void reader.cancel().catch(() => {}); } catch { /* Cleanup cannot delay failure. */ }
+    }
+    try { reader.releaseLock(); } catch { /* A noncooperative read may still be pending. */ }
+  }
+}
+
+/** Read-only fixed-query adapter used by the dispatch guard; failures remain unknown. */
 export async function readLiveQaInventoryFromGitHub(deps: Dependencies) {
   const overall = new AbortController();
   const requestMs = deps.requestMs ?? 5_000;
@@ -60,10 +94,11 @@ export async function readLiveQaInventoryFromGitHub(deps: Dependencies) {
             'X-GitHub-Api-Version': '2022-11-28' },
         }), request.signal);
         if (overall.signal.aborted || request.signal.aborted || response.status !== 200) throw deadlineError();
-        const body = await withinDeadline(response.text(), request.signal);
+        const body = await readBoundedBody(response, request.signal);
         if (overall.signal.aborted || request.signal.aborted || body.length > MAX_BODY_CHARACTERS) throw deadlineError();
         return JSON.parse(body) as unknown;
       } finally {
+        request.abort();
         clearTimeout(timer);
         overall.signal.removeEventListener('abort', onOverallAbort);
       }

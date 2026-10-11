@@ -4,7 +4,11 @@ import { readLiveQaInventory, readLiveQaInventoryFromGitHub } from './github-liv
 const config = { token: 'test-token-never-log', owner: 'test owner', workflowsRepo: 'workflow repo',
   workflowFile: 'package-intunewin.yml', ref: 'unrelated-branch' };
 const empty = { total_count: 0, workflow_runs: [] };
-const response = (status = 200, text = JSON.stringify(empty)) => ({ status, text: vi.fn(async () => text) }) as unknown as Response;
+const response = (status = 200, text = JSON.stringify(empty)) => {
+  const value = new Response(status === 304 ? null : text, { status });
+  const getReader = vi.spyOn(value.body ?? new ReadableStream(), 'getReader');
+  return Object.assign(value, { getReader });
+};
 const pending = <T>() => new Promise<T>(() => {});
 const read = (fetchImpl: typeof fetch) => readLiveQaInventoryFromGitHub({ config, fetchImpl });
 
@@ -55,12 +59,17 @@ describe('fixed QA GitHub inventory HTTP adapter', () => {
   });
 
   it('ends a hanging response body under the same request deadline', async () => {
-    const text = vi.fn(() => pending<string>());
-    const fetchImpl = vi.fn<typeof fetch>(async () => ({ status: 200, text }) as unknown as Response);
+    const bodyRead = vi.fn(() => pending<ReadableStreamReadResult<Uint8Array>>());
+    const cancel = vi.fn(() => pending<void>());
+    const reader = { read: bodyRead, cancel, releaseLock: vi.fn() };
+    const fetchImpl = vi.fn<typeof fetch>(async () => ({ status: 200, body: { getReader: () => reader } }) as unknown as Response);
     const result = read(fetchImpl);
     await vi.advanceTimersByTimeAsync(5_000);
     expect(await result).toEqual({ state: 'unknown' });
-    expect(text).toHaveBeenCalledTimes(1);
+    expect(bodyRead).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(reader.releaseLock).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][1]?.signal?.aborted).toBe(true);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -83,7 +92,7 @@ describe('fixed QA GitHub inventory HTTP adapter', () => {
     await vi.advanceTimersByTimeAsync(15_000);
     expect(await result).toEqual({ state: 'unknown' });
     await vi.advanceTimersByTimeAsync(45_000);
-    expect(late.text).not.toHaveBeenCalled();
+    expect(late.getReader).not.toHaveBeenCalled();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -92,7 +101,7 @@ describe('fixed QA GitHub inventory HTTP adapter', () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => failed);
     expect(await read(fetchImpl)).toEqual({ state: 'unknown' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(failed.text).not.toHaveBeenCalled();
+    expect(failed.getReader).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -103,6 +112,59 @@ describe('fixed QA GitHub inventory HTTP adapter', () => {
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       expect(vi.getTimerCount()).toBe(0);
     });
+
+  it('stops a multichunk oversized body before EOF and cancels without waiting', async () => {
+    const bodyRead = vi.fn()
+      .mockResolvedValueOnce({ done: false, value: new Uint8Array(2 * 1024 * 1024).fill(32) })
+      .mockResolvedValueOnce({ done: false, value: new Uint8Array(2 * 1024 * 1024 + 1).fill(32) })
+      .mockImplementation(() => pending<ReadableStreamReadResult<Uint8Array>>());
+    const cancel = vi.fn(() => pending<void>());
+    const reader = { read: bodyRead, cancel, releaseLock: vi.fn() };
+    const fetchImpl = vi.fn<typeof fetch>(async () => ({ status: 200, body: { getReader: () => reader } }) as unknown as Response);
+    expect(await read(fetchImpl)).toEqual({ state: 'unknown' });
+    expect(bodyRead).toHaveBeenCalledTimes(2);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(reader.releaseLock).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('caps UTF-8 bytes even when the decoded character count would fit', async () => {
+    const body = JSON.stringify({ ...empty, padding: '€'.repeat(1_400_000) });
+    expect(body.length).toBeLessThan(4 * 1024 * 1024);
+    const fetchImpl = vi.fn<typeof fetch>(async () => response(200, body));
+    expect(await read(fetchImpl)).toEqual({ state: 'unknown' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a valid JSON body exactly at the byte limit', async () => {
+    const json = JSON.stringify(empty);
+    const body = json + ' '.repeat(4 * 1024 * 1024 - json.length);
+    const fetchImpl = vi.fn<typeof fetch>(async () => response(200, body));
+    expect(await read(fetchImpl)).toEqual({ state: 'complete', inventory: empty });
+    expect(fetchImpl).toHaveBeenCalledTimes(10);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('decodes a UTF-8 code point split between stream chunks', async () => {
+    const bytes = new TextEncoder().encode(JSON.stringify({ ...empty, padding: '€' }));
+    const split = bytes.indexOf(0xe2) + 1;
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, split));
+        controller.enqueue(bytes.slice(split));
+        controller.close();
+      },
+    })));
+    expect(await read(fetchImpl)).toEqual({ state: 'complete', inventory: empty });
+  });
+
+  it('fails closed on invalid UTF-8 and a missing stream', async () => {
+    const malformed = vi.fn<typeof fetch>(async () => new Response(new Uint8Array([0xff])));
+    expect(await read(malformed)).toEqual({ state: 'unknown' });
+    const missing = vi.fn<typeof fetch>(async () => new Response(null));
+    expect(await read(missing)).toEqual({ state: 'unknown' });
+  });
 
   it('returns only unknown and never logs transport errors containing a token', async () => {
     const logs = [vi.spyOn(console, 'log'), vi.spyOn(console, 'error'), vi.spyOn(console, 'warn')];
