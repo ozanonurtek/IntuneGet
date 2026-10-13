@@ -266,6 +266,26 @@ export const MIGRATIONS: SqliteMigration[] = [
       `);
     },
   },
+  {
+    version: 6,
+    name: 'manual app mappings',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS manual_app_mappings (
+          id TEXT PRIMARY KEY,
+          discovered_app_name TEXT NOT NULL,
+          discovered_publisher TEXT,
+          winget_package_id TEXT NOT NULL,
+          tenant_id TEXT,
+          created_by TEXT,
+          is_verified INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE (tenant_id, discovered_app_name)
+        );
+      `);
+    },
+  },
 ];
 
 export function getSqliteSchemaVersion(db: BetterSqlite3.Database): number {

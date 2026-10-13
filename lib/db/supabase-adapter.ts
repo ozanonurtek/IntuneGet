@@ -19,6 +19,8 @@ import type {
   ClaimedAppRecord,
   CuratedLicenceAttestationInput,
   CuratedLicenceAttestationRecord,
+  ManualAppMappingInput,
+  ManualAppMappingRecord,
   UpdateCheckQuery,
   UpdateCheckResult,
 } from './types';
@@ -1127,6 +1129,96 @@ export const supabaseDb: DatabaseAdapter = {
         throw error;
       }
       return (updated as ClaimedAppRecord | null) ?? null;
+    },
+  },
+
+  manualAppMappings: {
+    async listForTenant(tenantId: string): Promise<ManualAppMappingRecord[]> {
+      const supabase = createServerClient();
+      const { data, error } = await supabase
+        .from('manual_app_mappings')
+        .select('*')
+        .or(`tenant_id.eq.${tenantId},tenant_id.is.null`)
+        .order('created_at', { ascending: false });
+      if (isError(error)) {
+        console.error('Error listing manual app mappings:', error);
+        throw error;
+      }
+      return (data ?? []) as ManualAppMappingRecord[];
+    },
+
+    async upsert(mapping: ManualAppMappingInput): Promise<{ mapping: ManualAppMappingRecord; updated: boolean }> {
+      const supabase = createServerClient();
+      const discoveredAppName = mapping.discovered_app_name.toLowerCase().trim();
+      const readQuery = supabase
+        .from('manual_app_mappings')
+        .select('id')
+        .eq('discovered_app_name', discoveredAppName);
+      const { data: existing, error: readError } = await (
+        mapping.tenant_id === null ? readQuery.is('tenant_id', null) : readQuery.eq('tenant_id', mapping.tenant_id)
+      ).maybeSingle();
+      if (isError(readError)) {
+        console.error('Error reading manual app mapping:', readError);
+        throw readError;
+      }
+      const result = existing
+        ? await supabase
+            .from('manual_app_mappings')
+            .update({
+              winget_package_id: mapping.winget_package_id,
+              discovered_publisher: mapping.discovered_publisher,
+              created_by: mapping.created_by,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', existing.id)
+            .select()
+            .single()
+        : await supabase
+            .from('manual_app_mappings')
+            .insert({
+              discovered_app_name: discoveredAppName,
+              discovered_publisher: mapping.discovered_publisher,
+              winget_package_id: mapping.winget_package_id,
+              tenant_id: mapping.tenant_id,
+              created_by: mapping.created_by,
+              is_verified: false,
+            })
+            .select()
+            .single();
+      if (isError(result.error) || !result.data) {
+        console.error('Error storing manual app mapping:', result.error);
+        throw result.error ?? new Error('Failed to store manual app mapping');
+      }
+      return { mapping: result.data as ManualAppMappingRecord, updated: Boolean(existing) };
+    },
+
+    async getById(id: string): Promise<ManualAppMappingRecord | null> {
+      const supabase = createServerClient();
+      const { data, error } = await supabase
+        .from('manual_app_mappings')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+      if (isError(error)) {
+        console.error('Error reading manual app mapping:', error);
+        throw error;
+      }
+      return (data as ManualAppMappingRecord | null) ?? null;
+    },
+
+    async delete(id: string, tenantId: string): Promise<boolean> {
+      const supabase = createServerClient();
+      const { data, error } = await supabase
+        .from('manual_app_mappings')
+        .delete()
+        .eq('id', id)
+        .eq('tenant_id', tenantId)
+        .select();
+      if (isError(error)) {
+        console.error('Error deleting manual app mapping:', error);
+        throw error;
+      }
+      return (data ?? []).length > 0;
     },
   },
 };

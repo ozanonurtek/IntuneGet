@@ -7,6 +7,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient, isSupabaseConfigured } from '@/lib/supabase';
 import { resolveTargetTenantId } from '@/lib/msp/tenant-resolution';
 import { parseAccessToken } from '@/lib/auth-utils';
+import { getDatabase, isSqliteMode } from '@/lib/db';
+import type { ManualAppMappingRecord } from '@/lib/db';
 import { matchDiscoveredApp, filterUserApps, isSystemApp, normalizeAppName } from '@/lib/matching/app-matcher';
 import { compareVersions } from '@/lib/version-compare';
 import { getServicePrincipalToken, invalidateServicePrincipalToken } from '@/lib/intune/graph-client';
@@ -532,10 +534,10 @@ export async function GET(request: NextRequest) {
     const now = new Date().toISOString();
     const unmanagedApps: UnmanagedApp[] = [];
 
-    // Get claimed apps + manual mappings. In sqlite mode there is no Supabase to
-    // query, so these stay empty: every app is unclaimed and auto-matched.
+    // Get claimed apps + manual mappings. In sqlite mode there is no Supabase
+    // to query, so both come from the local database instead.
     const claimedMap = new Map<string, string>();
-    const manualMappingMap = new Map<string, ManualMappingRow>();
+    const manualMappingMap = new Map<string, ManualMappingRow | ManualAppMappingRecord>();
 
     if (supabase) {
       const { data: claimedApps } = await supabase
@@ -555,6 +557,16 @@ export async function GET(request: NextRequest) {
 
       for (const m of manualMappings || []) {
         manualMappingMap.set(m.discovered_app_name.toLowerCase(), m);
+      }
+    } else if (isSqliteMode()) {
+      const claims = await getDatabase().claimedApps.listByTenant(tenantId);
+      for (const claim of claims) {
+        claimedMap.set(claim.discovered_app_id, claim.status);
+      }
+
+      const mappings = await getDatabase().manualAppMappings.listForTenant(tenantId);
+      for (const mapping of mappings) {
+        manualMappingMap.set(mapping.discovered_app_name.toLowerCase(), mapping);
       }
     }
 

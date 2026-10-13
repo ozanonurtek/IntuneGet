@@ -1,0 +1,5 @@
+{
+  "title": "Link discovered apps in SQLite",
+  "summary": "Self hosted installations using SQLite can now link discovered apps to WinGet packages, and linked or claimed apps show as such in Unmanaged Apps.",
+  "type": "fixed"
+}

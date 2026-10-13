@@ -7,11 +7,23 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient, isSupabaseServerConfigured } from '@/lib/supabase';
 import { resolveTargetTenantId } from '@/lib/msp/tenant-resolution';
 import { parseAccessToken } from '@/lib/auth-utils';
+import { getDatabase, isSqliteMode } from '@/lib/db';
+import type { ManualAppMappingRecord } from '@/lib/db';
 import type { ManualAppMapping, CreateMappingRequest } from '@/types/unmanaged';
 import type { Database } from '@/types/database';
 
 // Database row types from the Database schema
 type ManualMappingRow = Database['public']['Tables']['manual_app_mappings']['Row'];
+
+/**
+ * Manual mappings are stored in Supabase when it is configured. A SQLite self
+ * hosted deployment without Supabase stores them in its own database for the
+ * signed in tenant; any other deployment without Supabase cannot store them.
+ */
+function mappingStorage(): 'supabase' | 'sqlite' | null {
+  if (isSupabaseServerConfigured()) return 'supabase';
+  return isSqliteMode() ? 'sqlite' : null;
+}
 
 /**
  * GET - List all manual mappings for the tenant
@@ -26,8 +38,14 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    if (!isSupabaseServerConfigured()) {
+    const storage = mappingStorage();
+    if (!storage) {
       return NextResponse.json({ mappings: [] });
+    }
+
+    if (storage === 'sqlite') {
+      const mappings = await getDatabase().manualAppMappings.listForTenant(user.tenantId);
+      return NextResponse.json({ mappings: mappings.map(formatMapping) });
     }
 
     const supabase = createServerClient();
@@ -85,7 +103,8 @@ export async function GET(request: NextRequest) {
  * POST - Create a new manual mapping
  */
 export async function POST(request: NextRequest) {
-  if (!isSupabaseServerConfigured()) {
+  const storage = mappingStorage();
+  if (!storage) {
     return NextResponse.json(
       { error: 'Manual mappings require hosted services' },
       { status: 503 }
@@ -107,6 +126,28 @@ export async function POST(request: NextRequest) {
         { error: 'Missing required fields: discoveredAppName and wingetPackageId' },
         { status: 400 }
       );
+    }
+
+    if (storage === 'sqlite') {
+      const { mapping, updated } = await getDatabase().manualAppMappings.upsert({
+        discovered_app_name: body.discoveredAppName,
+        discovered_publisher: body.discoveredPublisher ?? null,
+        winget_package_id: body.wingetPackageId,
+        tenant_id: user.tenantId,
+        created_by: user.userId,
+      });
+
+      if (updated) {
+        return NextResponse.json({
+          mapping: formatMapping(mapping),
+          updated: true,
+        });
+      }
+
+      return NextResponse.json({
+        mapping: formatMapping(mapping),
+        updated: false,
+      }, { status: 201 });
     }
 
     const supabase = createServerClient();
@@ -207,7 +248,8 @@ export async function POST(request: NextRequest) {
  * DELETE - Remove a manual mapping
  */
 export async function DELETE(request: NextRequest) {
-  if (!isSupabaseServerConfigured()) {
+  const storage = mappingStorage();
+  if (!storage) {
     return NextResponse.json(
       { error: 'Manual mappings require hosted services' },
       { status: 503 }
@@ -230,6 +272,30 @@ export async function DELETE(request: NextRequest) {
         { error: 'Missing mapping ID' },
         { status: 400 }
       );
+    }
+
+    if (storage === 'sqlite') {
+      const mapping = await getDatabase().manualAppMappings.getById(mappingId);
+      if (!mapping) {
+        return NextResponse.json(
+          { error: 'Mapping not found' },
+          { status: 404 }
+        );
+      }
+
+      // Only allow deletion by tenant members, as the hosted route does
+      if (mapping.tenant_id !== user.tenantId) {
+        return NextResponse.json(
+          { error: 'Unauthorized to delete this mapping' },
+          { status: 403 }
+        );
+      }
+
+      await getDatabase().manualAppMappings.delete(mappingId, user.tenantId);
+
+      return NextResponse.json({
+        success: true,
+      });
     }
 
     const supabase = createServerClient();
@@ -305,7 +371,7 @@ export async function DELETE(request: NextRequest) {
   }
 }
 
-function formatMapping(m: ManualMappingRow): ManualAppMapping {
+function formatMapping(m: ManualMappingRow | ManualAppMappingRecord): ManualAppMapping {
   return {
     id: m.id,
     discoveredAppName: m.discovered_app_name,

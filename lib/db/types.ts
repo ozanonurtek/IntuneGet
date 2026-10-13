@@ -154,6 +154,27 @@ export type ClaimedAppInput = Pick<
 >;
 
 /**
+ * A user-created link from a discovered app name to a WinGet package. Names are
+ * stored lowercased and trimmed; tenant_id null means a global mapping.
+ */
+export interface ManualAppMappingRecord {
+  id: string;
+  discovered_app_name: string;
+  discovered_publisher: string | null;
+  winget_package_id: string;
+  tenant_id: string | null;
+  created_by: string | null;
+  is_verified: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ManualAppMappingInput = Pick<
+  ManualAppMappingRecord,
+  'discovered_app_name' | 'discovered_publisher' | 'winget_package_id' | 'tenant_id' | 'created_by'
+>;
+
+/**
  * Upload history record
  */
 export interface UploadHistoryRecord {
@@ -431,5 +452,22 @@ export interface DatabaseAdapter {
       tenantId: string,
       data: Partial<Pick<ClaimedAppRecord, 'status' | 'intune_app_id'>>
     ): Promise<ClaimedAppRecord | null>;
+  };
+
+  manualAppMappings: {
+    /** Mappings for the tenant plus global ones (tenant_id null), newest first */
+    listForTenant(tenantId: string): Promise<ManualAppMappingRecord[]>;
+
+    /**
+     * Create or replace the tenant's mapping for a discovered app name. `updated`
+     * is true when a mapping for that name already existed in the tenant.
+     */
+    upsert(mapping: ManualAppMappingInput): Promise<{ mapping: ManualAppMappingRecord; updated: boolean }>;
+
+    /** Null when no row has that id */
+    getById(id: string): Promise<ManualAppMappingRecord | null>;
+
+    /** Delete the mapping only if it belongs to the tenant. Returns whether a row was deleted. */
+    delete(id: string, tenantId: string): Promise<boolean>;
   };
 }

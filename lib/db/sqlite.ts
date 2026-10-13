@@ -20,6 +20,8 @@ import type {
   CuratedLicenceAttestationInput,
   ClaimedAppInput,
   ClaimedAppRecord,
+  ManualAppMappingInput,
+  ManualAppMappingRecord,
 } from './types';
 import type {
   AppUpdatePolicy,
@@ -93,6 +95,13 @@ function parseCheckResultRow(row: Record<string, unknown>): UpdateCheckResult {
     is_critical: Boolean(row.is_critical),
     is_managed: row.is_managed === undefined ? true : Boolean(row.is_managed),
   } as unknown as UpdateCheckResult;
+}
+
+function parseManualMappingRow(row: Record<string, unknown>): ManualAppMappingRecord {
+  return {
+    ...row,
+    is_verified: Boolean(row.is_verified),
+  } as unknown as ManualAppMappingRecord;
 }
 
 /**
@@ -1001,6 +1010,74 @@ export const sqliteDb: DatabaseAdapter = {
       return (database
         .prepare('SELECT * FROM claimed_apps WHERE id = ?')
         .get(id) as ClaimedAppRecord | undefined) ?? null;
+    },
+  },
+
+  manualAppMappings: {
+    async listForTenant(tenantId: string): Promise<ManualAppMappingRecord[]> {
+      const database = getDb();
+      return (database
+        .prepare('SELECT * FROM manual_app_mappings WHERE tenant_id = ? OR tenant_id IS NULL ORDER BY created_at DESC')
+        .all(tenantId) as Record<string, unknown>[]).map(parseManualMappingRow);
+    },
+
+    async upsert(mapping: ManualAppMappingInput): Promise<{ mapping: ManualAppMappingRecord; updated: boolean }> {
+      const database = getDb();
+      // Names are stored normalised so a mapping is keyed once per tenant,
+      // matching the hosted route. Upserts only ever target the tenant's own
+      // rows; global mappings (tenant_id null) are never replaced here.
+      const discoveredAppName = mapping.discovered_app_name.toLowerCase().trim();
+      const existing = database
+        .prepare('SELECT id FROM manual_app_mappings WHERE tenant_id = ? AND discovered_app_name = ?')
+        .get(mapping.tenant_id, discoveredAppName) as { id: string } | undefined;
+      const id = existing?.id ?? crypto.randomUUID();
+      if (existing) {
+        database
+          .prepare(
+            `UPDATE manual_app_mappings SET
+               winget_package_id = ?, discovered_publisher = ?, created_by = ?,
+               updated_at = datetime('now')
+             WHERE id = ?`
+          )
+          .run(mapping.winget_package_id, mapping.discovered_publisher, mapping.created_by, id);
+      } else {
+        database
+          .prepare(
+            `INSERT INTO manual_app_mappings (
+               id, discovered_app_name, discovered_publisher, winget_package_id,
+               tenant_id, created_by, is_verified
+             ) VALUES (?, ?, ?, ?, ?, ?, 0)`
+          )
+          .run(
+            id,
+            discoveredAppName,
+            mapping.discovered_publisher,
+            mapping.winget_package_id,
+            mapping.tenant_id,
+            mapping.created_by
+          );
+      }
+      const stored = database
+        .prepare('SELECT * FROM manual_app_mappings WHERE id = ?')
+        .get(id) as Record<string, unknown> | undefined;
+      if (!stored) throw new Error('Failed to store manual app mapping');
+      return { mapping: parseManualMappingRow(stored), updated: Boolean(existing) };
+    },
+
+    async getById(id: string): Promise<ManualAppMappingRecord | null> {
+      const database = getDb();
+      const stored = database
+        .prepare('SELECT * FROM manual_app_mappings WHERE id = ?')
+        .get(id) as Record<string, unknown> | undefined;
+      return stored ? parseManualMappingRow(stored) : null;
+    },
+
+    async delete(id: string, tenantId: string): Promise<boolean> {
+      const database = getDb();
+      const result = database
+        .prepare('DELETE FROM manual_app_mappings WHERE id = ? AND tenant_id = ?')
+        .run(id, tenantId);
+      return result.changes > 0;
     },
   },
 };
