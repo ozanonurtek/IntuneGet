@@ -1024,11 +1024,12 @@ export const sqliteDb: DatabaseAdapter = {
     async upsert(mapping: ManualAppMappingInput): Promise<{ mapping: ManualAppMappingRecord; updated: boolean }> {
       const database = getDb();
       // Names are stored normalised so a mapping is keyed once per tenant,
-      // matching the hosted route. Upserts only ever target the tenant's own
-      // rows; global mappings (tenant_id null) are never replaced here.
+      // matching the hosted route. The lookup matches the tenant with IS, so
+      // a global mapping (tenant_id null) is updated in place like a tenant
+      // mapping, matching the Supabase adapter.
       const discoveredAppName = mapping.discovered_app_name.toLowerCase().trim();
       const existing = database
-        .prepare('SELECT id FROM manual_app_mappings WHERE tenant_id = ? AND discovered_app_name = ?')
+        .prepare('SELECT id FROM manual_app_mappings WHERE tenant_id IS ? AND discovered_app_name = ?')
         .get(mapping.tenant_id, discoveredAppName) as { id: string } | undefined;
       const id = existing?.id ?? crypto.randomUUID();
       if (existing) {

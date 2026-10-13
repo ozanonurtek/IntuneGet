@@ -71,6 +71,24 @@ describe('manual app mappings with the SQLite adapter', () => {
     expect((await stored()).filter(row => row.discovered_app_name === 'fixture app')).toHaveLength(1);
   });
 
+  it('updates a global mapping in place when the same name is linked again', async () => {
+    const first = await sqliteDb.manualAppMappings.upsert({
+      discovered_app_name: '  GLOBAL review APP  ', discovered_publisher: null,
+      winget_package_id: 'Global.Review.App', tenant_id: null, created_by: null,
+    });
+    const second = await sqliteDb.manualAppMappings.upsert({
+      discovered_app_name: 'global REVIEW app', discovered_publisher: null,
+      winget_package_id: 'Global.Review.Renamed', tenant_id: null, created_by: null,
+    });
+    expect(second.updated).toBe(true);
+    expect(second.mapping.id).toBe(first.mapping.id);
+    expect(second.mapping.winget_package_id).toBe('Global.Review.Renamed');
+    const globals = (await sqliteDb.manualAppMappings.listForTenant('unrelated-fixture-tenant'))
+      .filter(row => row.discovered_app_name === 'global review app');
+    expect(globals).toHaveLength(1);
+    expect(globals[0].tenant_id).toBeNull();
+  });
+
   it('validates input and authentication before storing', async () => {
     const before = (await stored()).length;
     expect((await POST(request('POST', { discoveredAppName: 'Only Name' }))).status).toBe(400);
