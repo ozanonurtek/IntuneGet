@@ -13,6 +13,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerClientOrNull } from '@/lib/supabase';
 import { resolveTargetTenantId } from '@/lib/msp/tenant-resolution';
 import { parseAccessToken } from '@/lib/auth-utils';
+import { getDatabase, isSqliteMode } from '@/lib/db';
 import {
   GRAPH_API_BASE,
   fetchWithRetry,
@@ -159,7 +160,9 @@ export async function GET(request: NextRequest) {
 
     // Resolve the full set of detected-app (version) ids for this app from the
     // sync cache; fall back to the single id for rows written before this field
-    // existed or evicted rows.
+    // existed or evicted rows. Self-hosted sqlite mode has no Supabase cache:
+    // the unmanaged-apps scan persists the same merge result in the local
+    // database, so read the group from there instead.
     const { data: cacheRow } = supabase ? await supabase
       .from('discovered_apps_cache')
       .select('app_data, device_count')
@@ -168,13 +171,14 @@ export async function GET(request: NextRequest) {
       .maybeSingle() : { data: null };
 
     const appData = (cacheRow?.app_data ?? null) as unknown as { mergedAppIds?: string[] } | null;
-    const allVersionIds =
-      appData?.mergedAppIds && appData.mergedAppIds.length > 0
-        ? appData.mergedAppIds
-        : [appId];
+    const group = !supabase && isSqliteMode()
+      ? await getDatabase().discoveredAppGroups.get(tenantId, appId)
+      : null;
+    const mergedAppIds = appData?.mergedAppIds ?? group?.merged_app_ids ?? [];
+    const allVersionIds = mergedAppIds.length > 0 ? mergedAppIds : [appId];
     const truncated = allVersionIds.length > MAX_VERSIONS;
     const versionIds = truncated ? allVersionIds.slice(0, MAX_VERSIONS) : allVersionIds;
-    const summedDeviceCount = cacheRow?.device_count ?? undefined;
+    const summedDeviceCount = cacheRow?.device_count ?? group?.device_count ?? undefined;
 
     const token = await getServicePrincipalToken(tenantId);
     if (!token) {

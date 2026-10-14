@@ -670,6 +670,29 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Self-hosted sqlite mode has no discovered_apps_cache; persist the same
+    // merge result locally so the device drill-down can fan out across all
+    // merged versions instead of only the winner. Each scan replaces the
+    // tenant's groups, so stale version lists age out with the scan.
+    if (!supabase && isSqliteMode()) {
+      try {
+        await getDatabase().discoveredAppGroups.replaceForTenant(
+          tenantId,
+          filteredApps.map((app) => ({
+            tenant_id: tenantId,
+            discovered_app_id: app.id,
+            merged_app_ids: mergedIdsByWinnerId.get(app.id) ?? [app.id],
+            device_count: app.deviceCount,
+          }))
+        );
+      } catch (groupWriteError) {
+        // Group persistence is optional once the scan has completed; the
+        // replace is transactional, so the previous groups survive and the
+        // drill-down falls back to the winner version id.
+        console.warn('Discovered app group write failed; keeping previous groups', groupWriteError);
+      }
+    }
+
     // Only hide deployed apps - pending/deploying/failed should remain visible
     const visibleApps = unmanagedApps.filter(app => {
       const status = claimedMap.get(app.discoveredAppId);
