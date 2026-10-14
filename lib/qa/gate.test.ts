@@ -16,6 +16,7 @@ vi.mock('@/lib/catalog', () => ({
   getCatalogSource: () => ({ getQaResult: getQaResultMock }),
 }));
 vi.mock('@/lib/supabase', () => ({
+  isSupabaseServerConfigured: () => true,
   createServerClient: () => ({
     from: () => {
       const builder: Record<string, unknown> = {};

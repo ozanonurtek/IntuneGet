@@ -2,7 +2,9 @@ import { getCatalogSource } from '@/lib/catalog';
 import { CuratedCatalogError, isCuratedPackageId } from '@/lib/curated-catalog/core.mjs';
 import { getApprovedCuratedRelease } from '@/lib/curated-catalog/server';
 import { classifyQaFailure } from '@/lib/qa/classify';
-import { createServerClient } from '@/lib/supabase';
+import { createServerClient, isSupabaseServerConfigured } from '@/lib/supabase';
+import { isSqliteMode } from '@/lib/db';
+import { readSnapshotQaEvidence, type SnapshotQaEvidence } from '@/lib/qa/snapshot-gate';
 import {
   getPackageCompatibilityBlock,
   type PackageCompatibilityBlockCode,
@@ -155,9 +157,25 @@ export async function enforceQaGate(input: {
   const installerSha256 = input.installerSha256?.trim().toUpperCase() || '';
   const packageProfileSha256 = input.packageProfileSha256?.trim().toUpperCase() || '';
 
+  // SQLite self-host deployments have no Supabase QA tables, so the same
+  // dispatch checks below read the local catalog snapshot instead. The
+  // snapshot ships no compatibility table (those reviewed blocks are
+  // operational Supabase rows that are never exported), so the compatibility
+  // check is skipped in this mode.
+  const useSnapshotGate = !isSupabaseServerConfigured() && isSqliteMode();
+  const snapshotEvidence: SnapshotQaEvidence | null =
+    useSnapshotGate && installerSha256
+      ? await readSnapshotQaEvidence({
+          wingetId: input.wingetId,
+          version: input.version,
+          architecture,
+          installerSha256,
+        })
+      : null;
+
   // Reviewed exact-payload compatibility blocks cannot be bypassed. These are
   // upstream or platform safety boundaries, not ordinary QA failures.
-  if (installerSha256) {
+  if (installerSha256 && !useSnapshotGate) {
     const compatibilityBlock = await getPackageCompatibilityBlock(createServerClient(), {
       wingetId: input.wingetId,
       version: input.version,
@@ -178,48 +196,70 @@ export async function enforceQaGate(input: {
   // Security gate: a malicious VirusTotal verdict for this exact installer
   // blocks packaging even when the installability gate is overridden.
   if (installerSha256) {
-    const { data: securityRow, error: securityError } = await createServerClient()
-      .from('qa_package_results')
-      .select('virustotal_malicious, virustotal_total_engines')
-      .eq('winget_id', input.wingetId)
-      .eq('tested_version', input.version)
-      .eq('architecture', architecture)
-      .eq('installer_sha256', installerSha256)
-      .gte('virustotal_malicious', 1)
-      .order('tested_at_utc', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (securityError) {
-      throw new Error(`Could not read the installer security verdict: ${securityError.message}`);
-    }
-    const malicious = (securityRow?.virustotal_malicious as number | null) ?? 0;
-    if (malicious >= 1) {
-      throw new QaSecurityGateError({
-        wingetId: input.wingetId,
-        version: input.version,
-        architecture,
-        malicious,
-        totalEngines: (securityRow?.virustotal_total_engines as number | null) ?? null,
-      });
+    if (useSnapshotGate) {
+      const verdict = snapshotEvidence?.securityVerdict ?? null;
+      if (verdict && verdict.malicious >= 1) {
+        throw new QaSecurityGateError({
+          wingetId: input.wingetId,
+          version: input.version,
+          architecture,
+          malicious: verdict.malicious,
+          totalEngines: verdict.totalEngines,
+        });
+      }
+    } else {
+      const { data: securityRow, error: securityError } = await createServerClient()
+        .from('qa_package_results')
+        .select('virustotal_malicious, virustotal_total_engines')
+        .eq('winget_id', input.wingetId)
+        .eq('tested_version', input.version)
+        .eq('architecture', architecture)
+        .eq('installer_sha256', installerSha256)
+        .gte('virustotal_malicious', 1)
+        .order('tested_at_utc', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (securityError) {
+        throw new Error(`Could not read the installer security verdict: ${securityError.message}`);
+      }
+      const malicious = (securityRow?.virustotal_malicious as number | null) ?? 0;
+      if (malicious >= 1) {
+        throw new QaSecurityGateError({
+          wingetId: input.wingetId,
+          version: input.version,
+          architecture,
+          malicious,
+          totalEngines: (securityRow?.virustotal_total_engines as number | null) ?? null,
+        });
+      }
     }
   }
 
   if (!input.requirePassed && input.qaOverride) return;
 
-  const { data: passedRow, error: passedError } = installerSha256
-    ? await createServerClient()
-        .from('qa_package_results')
-        .select('winget_id, tested_version, architecture, installer_sha256, outcome')
-        .eq('winget_id', input.wingetId)
-        .eq('tested_version', input.version)
-        .eq('architecture', architecture)
-        .eq('installer_sha256', installerSha256)
-        .eq('outcome', 'Passed')
-        .order('tested_at_utc', { ascending: false })
-        .limit(1)
-        .maybeSingle()
-    : { data: null, error: null };
-  if (passedError) throw new Error(`Could not read app-version QA result: ${passedError.message}`);
+  let passedRow: unknown = null;
+  if (useSnapshotGate) {
+    // An unavailable snapshot reads as "no passed row": requirePassed keeps
+    // blocking below, ordinary deploys continue exactly as the Supabase path
+    // does when it finds no row.
+    passedRow = snapshotEvidence?.hasPassedRow ? { outcome: 'Passed' } : null;
+  } else {
+    const { data, error: passedError } = installerSha256
+      ? await createServerClient()
+          .from('qa_package_results')
+          .select('winget_id, tested_version, architecture, installer_sha256, outcome')
+          .eq('winget_id', input.wingetId)
+          .eq('tested_version', input.version)
+          .eq('architecture', architecture)
+          .eq('installer_sha256', installerSha256)
+          .eq('outcome', 'Passed')
+          .order('tested_at_utc', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      : { data: null, error: null };
+    if (passedError) throw new Error(`Could not read app-version QA result: ${passedError.message}`);
+    passedRow = data;
+  }
   if (passedRow) return;
 
   if (input.requirePassed) {
