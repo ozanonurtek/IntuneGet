@@ -6,8 +6,9 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { getDatabase, isSqliteMode } from '@/lib/db';
 import { DEFAULT_SAFETY_CONFIG } from '@/types/update-policies';
-import type { AutoUpdateStatus } from '@/types/update-policies';
+import type { AppUpdatePolicy, AutoUpdateStatus } from '@/types/update-policies';
 import { isIntuneApprovalFailure } from '@/lib/intune-approval';
 
 type TerminalStatus = 'deployed' | 'duplicate_skipped' | 'failed' | 'cancelled';
@@ -39,6 +40,13 @@ export async function handleAutoUpdateJobCompletion(
   terminalStatus: TerminalStatus,
   errorMessage?: string
 ): Promise<void> {
+  // Self-hosted sqlite mode has no Supabase: run the same bookkeeping through
+  // the database adapter so a dispatched auto-update job's history row and
+  // policy counters still reflect the outcome.
+  if (isSqliteMode()) {
+    return handleSqliteAutoUpdateJobCompletion(jobId, terminalStatus, errorMessage);
+  }
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -188,5 +196,101 @@ export async function handleAutoUpdateJobCompletion(
       // Non-critical: tracking data is already persisted, dashboard will self-clean after 7 days
       console.error('[AutoUpdate Cleanup] Failed to auto-dismiss job from dashboard:', deleteError);
     }
+  }
+}
+
+/**
+ * Self-hosted sqlite twin of the cleanup above, through the database adapter.
+ * Marks the auto_update_history row completed/failed and updates the policy's
+ * failure counters with the same idempotency guarantee. The hosted dashboard
+ * auto-dismiss (deleting the failed job row) has no adapter equivalent and is
+ * skipped: terminal jobs simply age out of the local uploads view.
+ */
+async function handleSqliteAutoUpdateJobCompletion(
+  jobId: string,
+  terminalStatus: TerminalStatus,
+  errorMessage?: string
+): Promise<void> {
+  const db = getDatabase();
+
+  const job = await db.jobs.getById(jobId);
+  if (!job) {
+    console.error(`[AutoUpdate Cleanup] Failed to fetch job: ${jobId}`);
+    return;
+  }
+
+  // Guard: not an auto-update job
+  if (!job.is_auto_update || !job.auto_update_policy_id) {
+    return;
+  }
+
+  const policyId = job.auto_update_policy_id;
+  const packageConfig = job.package_config as PackageConfig | null;
+  const historyId = packageConfig?.autoUpdateHistoryId;
+
+  if (!historyId) {
+    console.warn(
+      `[AutoUpdate Cleanup] No historyId found in package_config for job ${jobId} -- cannot verify idempotency, skipping`
+    );
+    return;
+  }
+
+  const isSuccess = terminalStatus === 'deployed' || terminalStatus === 'duplicate_skipped';
+  const now = new Date().toISOString();
+
+  // Idempotency check: if the history record is already in a terminal state,
+  // cleanup has already run. Skip policy updates to avoid double-counting.
+  const historyRows = await db.autoUpdateHistory.list(job.user_id, { limit: 1000, offset: 0 });
+  const historyRecord = historyRows.find((row) => row.id === historyId);
+  if (historyRecord && TERMINAL_HISTORY_STATUSES.includes(historyRecord.status)) {
+    return;
+  }
+
+  // Update auto_update_history record
+  if (isSuccess) {
+    await db.autoUpdateHistory.update(historyId, {
+      status: 'completed',
+      completed_at: now,
+    });
+  } else {
+    const historyStatus = terminalStatus === 'cancelled' ? 'cancelled' : 'failed';
+    await db.autoUpdateHistory.update(historyId, {
+      status: historyStatus,
+      error_message: errorMessage || `Job ${terminalStatus}`,
+      completed_at: now,
+    });
+  }
+
+  // Update the policy tracking
+  if (isSuccess) {
+    // Reset failure counter on success
+    await db.updatePolicies.update(policyId, job.user_id, {
+      consecutive_failures: 0,
+      updated_at: now,
+    });
+  } else {
+    // On failure: clear last_auto_update_version so the update reappears in
+    // the Available tab and increment consecutive_failures for the circuit
+    // breaker.
+    const policy = await db.updatePolicies.getById(policyId, job.user_id);
+    const newFailureCount = (policy?.consecutive_failures ?? 0) + 1;
+    const shouldDisable = newFailureCount >= DEFAULT_SAFETY_CONFIG.maxConsecutiveFailures;
+
+    if (shouldDisable) {
+      console.warn(
+        `[AutoUpdate Cleanup] Circuit breaker: disabling policy ${policyId} after ${newFailureCount} consecutive failures`
+      );
+    }
+
+    const updates: Partial<AppUpdatePolicy> = {
+      last_auto_update_version: null,
+      consecutive_failures: newFailureCount,
+      updated_at: now,
+    };
+    if (shouldDisable) {
+      updates.is_enabled = false;
+    }
+
+    await db.updatePolicies.update(policyId, job.user_id, updates);
   }
 }

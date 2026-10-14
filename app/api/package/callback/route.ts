@@ -6,6 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getDatabase } from '@/lib/db';
+import { isSupabaseServerConfigured } from '@/lib/supabase';
 import { verifyCallbackSignature } from '@/lib/callback-signature';
 import { onJobCompleted } from '@/lib/msp/batch-orchestrator';
 import { handleAutoUpdateJobCompletion } from '@/lib/auto-update/cleanup';
@@ -214,12 +215,17 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Check if this job belongs to a batch deployment item.
+    // Check if this job belongs to a batch deployment item. MSP batches live
+    // in Supabase and cannot exist without it, so skip the orchestrator in
+    // self-hosted mode instead of logging a configuration error on every
+    // callback.
     if (data.status === 'deployed' || data.status === 'failed' || data.status === 'duplicate_skipped') {
       const jobStatus = data.status === 'failed' ? 'failed' : 'completed';
-      onJobCompleted(data.jobId, jobStatus, data.message).catch((err) => {
-        console.error('[Callback] Batch orchestrator error:', err);
-      });
+      if (isSupabaseServerConfigured()) {
+        onJobCompleted(data.jobId, jobStatus, data.message).catch((err) => {
+          console.error('[Callback] Batch orchestrator error:', err);
+        });
+      }
 
       handleAutoUpdateJobCompletion(data.jobId, data.status, data.message).catch((err) => {
         console.error('[Callback] Auto-update cleanup error:', err);
