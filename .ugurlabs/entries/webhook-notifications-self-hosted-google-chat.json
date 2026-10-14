@@ -1,0 +1,5 @@
+{
+  "title": "Webhook notifications work on self-hosted deployments",
+  "summary": "Self-hosted SQLite deployments can now configure webhook notifications from Settings instead of seeing a Supabase requirement. Webhook configurations are stored in the local database, the nightly update check announces new updates once and marks them delivered, and Google Chat incoming webhooks are a first-class type that posts a card per available update. Email notifications still require Supabase.",
+  "type": "new"
+}
