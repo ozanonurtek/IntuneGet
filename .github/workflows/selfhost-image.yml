@@ -2,7 +2,7 @@ name: Self-host image
 
 on:
   push:
-    branches: [selfhost/sqlite-github]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -41,8 +41,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/ozanonurtek/intuneget:selfhost-${{ github.sha }}
-            ghcr.io/ozanonurtek/intuneget:selfhost-latest
+            ghcr.io/ozanonurtek/intuneget:sha-${{ github.sha }}
+            ghcr.io/ozanonurtek/intuneget:latest
           labels: |
             org.opencontainers.image.source=https://github.com/ozanonurtek/IntuneGet
 
@@ -50,6 +50,6 @@ jobs:
         run: |
           {
             echo "## Self-host image"
-            echo "- Tag: \`ghcr.io/ozanonurtek/intuneget:selfhost-${{ github.sha }}\`"
+            echo "- Tag: \`ghcr.io/ozanonurtek/intuneget:sha-${{ github.sha }}\`"
             echo "- Digest: \`ghcr.io/ozanonurtek/intuneget@${{ steps.build.outputs.digest }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
