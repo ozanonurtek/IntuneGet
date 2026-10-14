@@ -183,6 +183,12 @@ Optional catalog snapshot overrides (sensible defaults, normally unset):
 > canonical private QA JSON by up to one snapshot cycle. Older snapshots that
 > do not contain the optional `qa_results` table remain compatible: apps simply
 > appear as not QA tested until a newer snapshot is downloaded.
+> The packaging QA gate is also served from the snapshot in SQLite mode:
+> malicious VirusTotal verdicts (`catalog_file_reputation`, with the
+> `qa_results` VirusTotal columns as the legacy fallback) and passed
+> installation-test rows are read from the same downloaded file, and an
+> unavailable snapshot degrades exactly like a missing Supabase row instead of
+> failing the deploy.
 >
 > Note: app update policies and their auto-update history are stored locally in
 > SQLite, and so are discovered app claims and manual app mappings. Other
@@ -408,6 +414,17 @@ only (no live Intune query), and it does not run hosted QA, send
 notifications, or require tenant consent. Rate limits and the failure circuit
 breaker still apply, and jobs are created in `queued` state for the local
 packager.
+
+With `PACKAGER_MODE=github` (and the GitHub Actions variables configured), the
+update check no longer leaves jobs queued for a local packager: each triggered
+auto-update job is dispatched to GitHub Actions with the same workflow inputs
+the hosted service sends, and the job records the workflow run ID and URL. A
+dispatch failure marks the packaging job and the auto-update history row as
+failed with the error message. The dispatch runs the deployment QA gate, which
+in SQLite mode is evaluated against the catalog snapshot (see the QA note
+above): a malicious VirusTotal verdict for the exact installer blocks the
+dispatch, and auto-update additionally requires a passed installation-test row
+in the snapshot, mirroring the hosted auto-update gate.
 
 The on-demand refresh endpoint (`POST /api/updates/refresh`) runs the same
 catalog check in SQLite mode.
