@@ -10,12 +10,12 @@
  *      latest version, stores the results, and triggers enabled auto_update
  *      policies.
  *   2. triggerSqliteAutoUpdate applies the same safety gates as the hosted
- *      trigger and creates a queued packaging job that the local packager picks
- *      up.
+ *      trigger and creates a packaging job. With PACKAGER_MODE=github the job
+ *      is dispatched to GitHub Actions exactly like the hosted trigger; with a
+ *      local packager it stays queued for the self-hosted packager to pick up.
  *
- * It intentionally skips the hosted-only steps: hosted QA demand (jobs go
- * straight to queued), tenant consent checks, notifications, and GitHub Actions
- * dispatch. Those remain hosted behaviour.
+ * It intentionally skips the hosted-only steps: hosted QA demand, tenant
+ * consent checks, and notifications. Those remain hosted behaviour.
  */
 
 import type { DatabaseAdapter, UploadHistoryRecord } from '@/lib/db/types';
@@ -24,6 +24,12 @@ import type { Json } from '@/types/database';
 import { getCatalogSource } from '@/lib/catalog';
 import { compareVersions } from '@/lib/version-compare';
 import { getLatestInstallerInfo } from '@/lib/auto-update/trigger';
+import {
+  buildAutoUpdateWorkflowInputs,
+  getAutoUpdateCallbackUrl,
+} from '@/lib/auto-update/dispatch';
+import { isGitHubActionsConfigured, triggerPackagingWorkflow } from '@/lib/github-actions';
+import { getFeatureFlags } from '@/lib/features';
 import { isCuratedPackageId } from '@/lib/curated-catalog/core.mjs';
 import { assertCuratedInstaller } from '@/lib/curated-catalog/server';
 import { buildCuratedCartItem } from '@/lib/curated-catalog/package';
@@ -253,6 +259,67 @@ export async function triggerSqliteAutoUpdate(
         auto_update_policy_id: policy.id,
       });
       packagingJobId = job.id;
+
+      // GitHub packager mode dispatches the job to GitHub Actions the way the
+      // hosted auto-update trigger does; local packager mode leaves the job
+      // queued for pickup by the self-hosted packager.
+      if (!getFeatureFlags().localPackager && isGitHubActionsConfigured()) {
+        try {
+          const trigger = await triggerPackagingWorkflow(
+            buildAutoUpdateWorkflowInputs({
+              jobId: job.id,
+              tenantId: policy.tenant_id,
+              wingetId: updateInfo.wingetId,
+              installer: updateInfo,
+              deploymentConfig: config,
+              callbackUrl: getAutoUpdateCallbackUrl(),
+              carryOverAssignments: false,
+              supersedePrevious: Boolean(updateInfo.currentIntuneAppId),
+            }),
+            undefined,
+            { requireQaPass: true }
+          );
+
+          const packagingStarted: {
+            status: string;
+            packaging_started_at: string;
+            github_run_id?: string;
+            github_run_url?: string;
+          } = {
+            status: 'packaging',
+            packaging_started_at: new Date().toISOString(),
+          };
+          if (trigger.runId) {
+            packagingStarted.github_run_id = trigger.runId.toString();
+            packagingStarted.github_run_url = trigger.runUrl;
+          }
+          await db.jobs.update(job.id, packagingStarted);
+        } catch (dispatchError) {
+          const message =
+            dispatchError instanceof Error ? dispatchError.message : 'Unknown dispatch error';
+          await db.jobs
+            .update(job.id, {
+              status: 'failed',
+              error_message: message,
+              completed_at: new Date().toISOString(),
+            })
+            .catch(() => null);
+          await db.autoUpdateHistory
+            .update(history.id, {
+              packaging_job_id: job.id,
+              status: 'failed',
+              error_message: message,
+              completed_at: new Date().toISOString(),
+            })
+            .catch(() => null);
+          return {
+            success: false,
+            error: message,
+            packagingJobId: job.id,
+            historyId: history.id,
+          };
+        }
+      }
 
       await db.autoUpdateHistory.update(history.id, {
         packaging_job_id: job.id,

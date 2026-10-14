@@ -4,7 +4,6 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { sanitizeAssignmentsForDispatch } from '@/lib/assignment-intents';
 import { createServerClient, isSupabaseServerConfigured } from '@/lib/supabase';
 import { getCatalogSource } from '@/lib/catalog';
 import { parseAccessToken } from '@/lib/auth-utils';
@@ -16,12 +15,12 @@ import {
   isGitHubActionsConfigured,
   triggerPackagingWorkflow,
 } from '@/lib/github-actions';
-import { getAppConfig } from '@/lib/config';
+import {
+  buildAutoUpdateWorkflowInputs,
+  getAutoUpdateCallbackUrl,
+} from '@/lib/auto-update/dispatch';
 import { getFeatureFlags } from '@/lib/features';
-import { extractSilentSwitches } from '@/lib/msp/silent-switches';
-import { buildIntuneAppDescription } from '@/lib/intune-description';
 import { buildDeploymentConfigForApp } from '@/lib/update-policies/build-deployment-config';
-import type { WorkflowInputs } from '@/lib/github-actions';
 import type {
   TriggerUpdateRequest,
   TriggerUpdateResponse,
@@ -323,11 +322,7 @@ export async function POST(request: NextRequest) {
           const isLocalPackagerMode = features.localPackager;
 
           if (!isLocalPackagerMode && isGitHubActionsConfigured()) {
-            const appConfig = getAppConfig();
-            const baseUrl = appConfig.app.url || (process.env.VERCEL_URL
-              ? `https://${process.env.VERCEL_URL}`
-              : 'http://localhost:3000');
-            const callbackUrl = `${baseUrl}/api/package/callback`;
+            const callbackUrl = getAutoUpdateCallbackUrl();
 
             const deploymentConfig = policy.deployment_config as unknown as DeploymentConfig;
 
@@ -335,66 +330,17 @@ export async function POST(request: NextRequest) {
             // policy value may be stale, so the current setting wins
             const currentCarryOver = globalCarryOver;
 
-            const workflowInputs: WorkflowInputs = {
-              sourceType: installerInfo.sourceType,
-              curatedReleaseId: installerInfo.curatedReleaseId,
+            const workflowInputs = buildAutoUpdateWorkflowInputs({
               jobId: triggerResult.packagingJobId,
               tenantId: req.tenant_id,
               wingetId: req.winget_id,
-              displayName: deploymentConfig.displayName || installerInfo.displayName,
-              description: buildIntuneAppDescription({
-                description: deploymentConfig.description,
-                fallback: `Deployed via IntuneGet from Winget: ${req.winget_id}`,
-              }),
-              publisher: deploymentConfig.publisher || 'Unknown Publisher',
-              version: installerInfo.latestVersion,
-              architecture: deploymentConfig.architecture || 'x64',
-              installerUrl: installerInfo.installerUrl,
-              installerSha256: installerInfo.installerSha256 || '',
-              installerType: installerInfo.installerType || deploymentConfig.installerType || 'exe',
-              nestedInstallerType: installerInfo.nestedInstallerType,
-              nestedInstallerPath: installerInfo.nestedInstallerPath,
-              silentSwitches: extractSilentSwitches(
-                deploymentConfig.installCommand || '',
-                installerInfo.installerType || deploymentConfig.installerType || 'exe',
-                installerInfo.nestedInstallerType
-              ),
-              uninstallCommand: deploymentConfig.uninstallCommand || '',
+              installer: installerInfo,
+              deploymentConfig,
               callbackUrl,
-              detectionRules: deploymentConfig.detectionRules
-                ? JSON.stringify(deploymentConfig.detectionRules)
-                : undefined,
-              // PSADT settings from the original deployment; triggerAutoUpdate
-              // backfills them onto the policy for pre-existing policies
-              psadtConfig: deploymentConfig.psadtConfig
-                ? JSON.stringify(deploymentConfig.psadtConfig)
-                : undefined,
-              assignments: deploymentConfig.assignments
-                ? JSON.stringify(
-                    sanitizeAssignmentsForDispatch(
-                      deploymentConfig.assignments,
-                      Boolean(deploymentConfig.requirementRules?.length)
-                    )
-                  )
-                : undefined,
-              categories: deploymentConfig.categories
-                ? JSON.stringify(deploymentConfig.categories)
-                : undefined,
-              requirementRules: deploymentConfig.requirementRules
-                ? JSON.stringify(deploymentConfig.requirementRules)
-                : undefined,
-              relationships: deploymentConfig.relationships && deploymentConfig.relationships.length > 0
-                ? JSON.stringify(deploymentConfig.relationships)
-                : undefined,
-              installScope: (deploymentConfig.installScope === 'user' ? 'user' : 'machine') as 'machine' | 'user',
-              forceCreate: deploymentConfig.forceCreateNewApp !== false,
-              sourceIntuneAppId: installerInfo.currentIntuneAppId || undefined,
               carryOverAssignments: currentCarryOver,
-              removeAssignmentsFromPreviousApp: currentCarryOver,
-              autoSupersede: supersedePrevious,
-              supersedenceType: supersedePrevious ? 'update' : undefined,
+              supersedePrevious,
               packageProfileSha256: triggerResult.packageProfileSha256,
-            };
+            });
 
             const isBatch = updateRequests.length > 1;
             try {
