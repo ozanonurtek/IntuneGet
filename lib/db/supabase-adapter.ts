@@ -19,6 +19,8 @@ import type {
   ClaimedAppRecord,
   CuratedLicenceAttestationInput,
   CuratedLicenceAttestationRecord,
+  DiscoveredAppGroupInput,
+  DiscoveredAppGroupRecord,
   ManualAppMappingInput,
   ManualAppMappingRecord,
   UpdateCheckQuery,
@@ -1219,6 +1221,21 @@ export const supabaseDb: DatabaseAdapter = {
         throw error;
       }
       return (data ?? []).length > 0;
+    },
+  },
+
+  discoveredAppGroups: {
+    // Supabase mode keeps the merge result inside
+    // discovered_apps_cache.app_data.mergedAppIds and the routes read it from
+    // there directly, so these methods are a documented no-op that only keeps
+    // the adapter interface complete for the SQLite-only scan persistence.
+    async replaceForTenant(_tenantId: string, _groups: DiscoveredAppGroupInput[]): Promise<void> {
+      console.warn('[Supabase adapter] discoveredAppGroups.replaceForTenant is a SQLite-mode no-op');
+    },
+
+    async get(_tenantId: string, _discoveredAppId: string): Promise<DiscoveredAppGroupRecord | null> {
+      console.warn('[Supabase adapter] discoveredAppGroups.get is a SQLite-mode no-op');
+      return null;
     },
   },
 };

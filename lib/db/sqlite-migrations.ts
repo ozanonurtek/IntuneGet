@@ -286,6 +286,22 @@ export const MIGRATIONS: SqliteMigration[] = [
       `);
     },
   },
+  {
+    version: 7,
+    name: 'discovered app groups',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS discovered_app_groups (
+          tenant_id TEXT NOT NULL,
+          discovered_app_id TEXT NOT NULL,
+          merged_app_ids TEXT NOT NULL,
+          device_count INTEGER NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (tenant_id, discovered_app_id)
+        );
+      `);
+    },
+  },
 ];
 
 export function getSqliteSchemaVersion(db: BetterSqlite3.Database): number {

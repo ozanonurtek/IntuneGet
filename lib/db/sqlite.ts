@@ -20,6 +20,8 @@ import type {
   CuratedLicenceAttestationInput,
   ClaimedAppInput,
   ClaimedAppRecord,
+  DiscoveredAppGroupInput,
+  DiscoveredAppGroupRecord,
   ManualAppMappingInput,
   ManualAppMappingRecord,
 } from './types';
@@ -1079,6 +1081,46 @@ export const sqliteDb: DatabaseAdapter = {
         .prepare('DELETE FROM manual_app_mappings WHERE id = ? AND tenant_id = ?')
         .run(id, tenantId);
       return result.changes > 0;
+    },
+  },
+
+  discoveredAppGroups: {
+    async replaceForTenant(tenantId: string, groups: DiscoveredAppGroupInput[]): Promise<void> {
+      const database = getDb();
+      const replace = database.transaction((rows: DiscoveredAppGroupInput[]) => {
+        database
+          .prepare('DELETE FROM discovered_app_groups WHERE tenant_id = ?')
+          .run(tenantId);
+        const insert = database.prepare(
+          `INSERT INTO discovered_app_groups (
+             tenant_id, discovered_app_id, merged_app_ids, device_count, updated_at
+           ) VALUES (?, ?, ?, ?, datetime('now'))`
+        );
+        for (const row of rows) {
+          insert.run(
+            row.tenant_id,
+            row.discovered_app_id,
+            JSON.stringify(row.merged_app_ids),
+            row.device_count
+          );
+        }
+      });
+      replace(groups);
+    },
+
+    async get(tenantId: string, discoveredAppId: string): Promise<DiscoveredAppGroupRecord | null> {
+      const database = getDb();
+      const row = database
+        .prepare('SELECT * FROM discovered_app_groups WHERE tenant_id = ? AND discovered_app_id = ?')
+        .get(tenantId, discoveredAppId) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        tenant_id: row.tenant_id as string,
+        discovered_app_id: row.discovered_app_id as string,
+        merged_app_ids: JSON.parse(row.merged_app_ids as string) as string[],
+        device_count: row.device_count as number,
+        updated_at: row.updated_at as string,
+      };
     },
   },
 };

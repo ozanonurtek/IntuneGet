@@ -175,6 +175,24 @@ export type ManualAppMappingInput = Pick<
 >;
 
 /**
+ * The merge result of one discovered-apps scan for a single consolidated app:
+ * the winner's detected-app id, every version id merged into it, and the
+ * summed device count displayed on the card.
+ */
+export interface DiscoveredAppGroupRecord {
+  tenant_id: string;
+  discovered_app_id: string;
+  merged_app_ids: string[];
+  device_count: number;
+  updated_at: string;
+}
+
+export type DiscoveredAppGroupInput = Pick<
+  DiscoveredAppGroupRecord,
+  'tenant_id' | 'discovered_app_id' | 'merged_app_ids' | 'device_count'
+>;
+
+/**
  * Upload history record
  */
 export interface UploadHistoryRecord {
@@ -469,5 +487,19 @@ export interface DatabaseAdapter {
 
     /** Delete the mapping only if it belongs to the tenant. Returns whether a row was deleted. */
     delete(id: string, tenantId: string): Promise<boolean>;
+  };
+
+  discoveredAppGroups: {
+    /**
+     * Replace the tenant's stored groups with a fresh scan's set in one
+     * transaction. Each group is keyed by the winner's discovered-app id and
+     * lists every merged version id.
+     */
+    replaceForTenant(tenantId: string, groups: DiscoveredAppGroupInput[]): Promise<void>;
+
+    /**
+     * The stored group for one winner id, or null when no scan recorded it.
+     */
+    get(tenantId: string, discoveredAppId: string): Promise<DiscoveredAppGroupRecord | null>;
   };
 }
