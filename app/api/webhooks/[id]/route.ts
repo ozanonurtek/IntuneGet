@@ -7,9 +7,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient, isSupabaseServerConfigured } from '@/lib/supabase';
+import { getDatabase, isSqliteMode } from '@/lib/db';
 import { parseAccessToken } from '@/lib/auth-utils';
 import { WEBHOOK_STORAGE_UNAVAILABLE_MESSAGE } from '@/types/notifications';
-import { validateWebhookUrl } from '@/lib/webhooks/service';
+import { MASKED_WEBHOOK_URL, maskWebhookUrl, validateWebhookUrl } from '@/lib/webhooks/service';
 import type {
   WebhookConfiguration,
   WebhookConfigurationUpdate,
@@ -18,6 +19,26 @@ import type { Database } from '@/types/database';
 
 type WebhookConfigurationDatabaseUpdate =
   Database['public']['Tables']['webhook_configurations']['Update'];
+
+const WEBHOOK_TYPES: WebhookConfigurationUpdate['webhook_type'][] = [
+  'slack',
+  'teams',
+  'discord',
+  'googlechat',
+  'custom',
+];
+
+/**
+ * Mask secrets and Google Chat URLs before a webhook is echoed back. A Google
+ * Chat webhook URL carries the space key and token in its query string.
+ */
+function sanitizeWebhook(webhook: WebhookConfiguration) {
+  return {
+    ...webhook,
+    secret: webhook.secret ? '********' : null,
+    url: maskWebhookUrl(webhook),
+  };
+}
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -38,6 +59,17 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     }
 
     const { id } = await params;
+
+    if (isSqliteMode()) {
+      const webhook = await getDatabase().webhookConfigurations.get(id, user.userId);
+      if (!webhook) {
+        return NextResponse.json(
+          { error: 'Webhook not found' },
+          { status: 404 }
+        );
+      }
+      return NextResponse.json({ webhook: sanitizeWebhook(webhook) });
+    }
 
     if (!isSupabaseServerConfigured()) {
       return NextResponse.json({ error: WEBHOOK_STORAGE_UNAVAILABLE_MESSAGE }, { status: 503 });
@@ -67,10 +99,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     }
 
     // Mask secret in response
-    const sanitizedWebhook = {
-      ...webhook,
-      secret: webhook.secret ? '********' : null,
-    };
+    const sanitizedWebhook = sanitizeWebhook(webhook);
 
     return NextResponse.json({ webhook: sanitizedWebhook });
   } catch {
@@ -98,6 +127,12 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const { id } = await params;
     const body: WebhookConfigurationUpdate = await request.json();
 
+    // The API masks Google Chat URLs in responses, so a submitted URL equal to
+    // the mask means "unchanged", exactly like an untouched secret.
+    if (body.url === MASKED_WEBHOOK_URL) {
+      body.url = undefined;
+    }
+
     // Validate URL if provided
     if (body.url) {
       const urlValidation = validateWebhookUrl(body.url);
@@ -110,14 +145,30 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
 
     // Validate webhook type if provided
-    if (
-      body.webhook_type &&
-      !['slack', 'teams', 'discord', 'custom'].includes(body.webhook_type)
-    ) {
+    if (body.webhook_type && !WEBHOOK_TYPES.includes(body.webhook_type)) {
       return NextResponse.json(
         { error: 'Invalid webhook type' },
         { status: 400 }
       );
+    }
+
+    if (isSqliteMode()) {
+      const update: WebhookConfigurationUpdate = {};
+      if (body.name !== undefined) update.name = body.name.trim();
+      if (body.url !== undefined) update.url = body.url;
+      if (body.webhook_type !== undefined) update.webhook_type = body.webhook_type;
+      if (body.headers !== undefined) update.headers = body.headers;
+      if (body.is_enabled !== undefined) update.is_enabled = body.is_enabled;
+      if ('secret' in body) update.secret = body.secret;
+
+      const webhook = await getDatabase().webhookConfigurations.update(id, user.userId, update);
+      if (!webhook) {
+        return NextResponse.json(
+          { error: 'Webhook not found' },
+          { status: 404 }
+        );
+      }
+      return NextResponse.json({ webhook: sanitizeWebhook(webhook) });
     }
 
     if (!isSupabaseServerConfigured()) {
@@ -173,10 +224,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
 
     // Mask secret in response
-    const sanitizedWebhook = {
-      ...webhook,
-      secret: webhook.secret ? '********' : null,
-    };
+    const sanitizedWebhook = sanitizeWebhook(webhook);
 
     return NextResponse.json({ webhook: sanitizedWebhook });
   } catch {
@@ -202,6 +250,17 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     }
 
     const { id } = await params;
+
+    if (isSqliteMode()) {
+      const deleted = await getDatabase().webhookConfigurations.delete(id, user.userId);
+      if (!deleted) {
+        return NextResponse.json(
+          { error: 'Webhook not found' },
+          { status: 404 }
+        );
+      }
+      return NextResponse.json({ success: true });
+    }
 
     if (!isSupabaseServerConfigured()) {
       return NextResponse.json({ error: WEBHOOK_STORAGE_UNAVAILABLE_MESSAGE }, { status: 503 });

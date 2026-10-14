@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
+import { WEBHOOK_STORAGE_UNAVAILABLE_MESSAGE } from '@/types/notifications';
 
 const fixture = vi.hoisted(() => ({ allowed: true, client: null as unknown }));
 const clientFactory = vi.hoisted(() => vi.fn());
@@ -21,11 +22,11 @@ const post = (body: unknown) => new NextRequest('http://localhost/api/webhooks',
   method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' },
 });
 const valid = { name: ' Local fixture ', url: 'https://example.test/webhook', webhook_type: 'custom' };
-const unavailable = { error: 'Webhook notifications require Supabase to be configured for this deployment.' };
+const unavailable = { error: WEBHOOK_STORAGE_UNAVAILABLE_MESSAGE };
 beforeEach(() => {
   vi.resetModules(); vi.doUnmock('@/lib/supabase');
   fixture.allowed = true; fixture.client = null; clientFactory.mockClear();
-  vi.stubEnv('DATABASE_MODE', 'sqlite'); vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', '');
+  vi.stubEnv('DATABASE_MODE', 'supabase'); vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', '');
   vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', ''); vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', '');
   vi.stubGlobal('fetch', vi.fn(() => { throw new Error('Network forbidden in route tests'); }));
 });

@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient, isSupabaseServerConfigured } from '@/lib/supabase';
+import { getDatabase, isSqliteMode } from '@/lib/db';
 import { parseAccessToken } from '@/lib/auth-utils';
 import { WEBHOOK_STORAGE_UNAVAILABLE_MESSAGE } from '@/types/notifications';
 import { sendTestWebhook } from '@/lib/webhooks/service';
@@ -33,6 +34,33 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     const { id } = await params;
+
+    if (isSqliteMode()) {
+      const db = getDatabase();
+
+      const webhook = await db.webhookConfigurations.get(id, user.userId);
+      if (!webhook) {
+        return NextResponse.json(
+          { error: 'Webhook not found' },
+          { status: 404 }
+        );
+      }
+
+      const result = await sendTestWebhook(webhook);
+
+      await db.webhookConfigurations.markDelivery(
+        webhook.id,
+        user.userId,
+        result.success,
+        (webhook.failure_count || 0) + 1
+      );
+
+      return NextResponse.json({
+        success: result.success,
+        statusCode: result.statusCode,
+        error: result.error,
+      });
+    }
 
     if (!isSupabaseServerConfigured()) {
       return NextResponse.json({ error: WEBHOOK_STORAGE_UNAVAILABLE_MESSAGE }, { status: 503 });

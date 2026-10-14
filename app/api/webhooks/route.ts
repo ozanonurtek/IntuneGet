@@ -6,13 +6,35 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient, isSupabaseServerConfigured } from '@/lib/supabase';
+import { getDatabase, isSqliteMode } from '@/lib/db';
 import { parseAccessToken } from '@/lib/auth-utils';
-import { validateWebhookUrl, detectWebhookType } from '@/lib/webhooks/service';
+import { validateWebhookUrl, detectWebhookType, maskWebhookUrl } from '@/lib/webhooks/service';
 import { WEBHOOK_STORAGE_UNAVAILABLE_MESSAGE } from '@/types/notifications';
 import type {
   WebhookConfiguration,
   WebhookConfigurationInput,
 } from '@/types/notifications';
+import type { WebhookConfigurationRecord } from '@/lib/db';
+
+const WEBHOOK_TYPES: WebhookConfigurationInput['webhook_type'][] = [
+  'slack',
+  'teams',
+  'discord',
+  'googlechat',
+  'custom',
+];
+
+/**
+ * Mask secrets and Google Chat URLs before a webhook is echoed back. A Google
+ * Chat webhook URL carries the space key and token in its query string.
+ */
+function sanitizeWebhook(webhook: WebhookConfiguration | WebhookConfigurationRecord) {
+  return {
+    ...webhook,
+    secret: webhook.secret ? '********' : null,
+    url: maskWebhookUrl(webhook),
+  };
+}
 
 /**
  * GET /api/webhooks
@@ -26,6 +48,11 @@ export async function GET(request: NextRequest) {
         { error: 'Authentication required' },
         { status: 401 }
       );
+    }
+
+    if (isSqliteMode()) {
+      const webhooks = await getDatabase().webhookConfigurations.list(user.userId);
+      return NextResponse.json({ webhooks: webhooks.map(sanitizeWebhook) });
     }
 
     if (!isSupabaseServerConfigured()) {
@@ -52,10 +79,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Mask secrets in response
-    const sanitizedWebhooks = (webhooks || []).map((webhook: WebhookConfiguration) => ({
-      ...webhook,
-      secret: webhook.secret ? '********' : null,
-    }));
+    const sanitizedWebhooks = (webhooks || []).map((webhook: WebhookConfiguration) => sanitizeWebhook(webhook));
 
     return NextResponse.json({ webhooks: sanitizedWebhooks });
   } catch {
@@ -114,11 +138,37 @@ export async function POST(request: NextRequest) {
     }
 
     // Validate webhook type
-    if (!['slack', 'teams', 'discord', 'custom'].includes(webhookType)) {
+    if (!WEBHOOK_TYPES.includes(webhookType)) {
       return NextResponse.json(
         { error: 'Invalid webhook type' },
         { status: 400 }
       );
+    }
+
+    if (isSqliteMode()) {
+      const db = getDatabase();
+
+      // Check webhook limit (max 10 per user)
+      const count = await db.webhookConfigurations.count(user.userId);
+      if (count >= 10) {
+        return NextResponse.json(
+          { error: 'Maximum of 10 webhooks allowed per user' },
+          { status: 400 }
+        );
+      }
+
+      const webhook = await db.webhookConfigurations.create({
+        user_id: user.userId,
+        tenant_id: user.tenantId,
+        name: body.name.trim(),
+        url: body.url,
+        webhook_type: webhookType,
+        secret: body.secret || null,
+        headers: body.headers || {},
+        is_enabled: body.is_enabled ?? true,
+      });
+
+      return NextResponse.json({ webhook: sanitizeWebhook(webhook) }, { status: 201 });
     }
 
     if (!isSupabaseServerConfigured()) {
@@ -174,10 +224,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Mask secret in response
-    const sanitizedWebhook = {
-      ...webhook,
-      secret: webhook.secret ? '********' : null,
-    };
+    const sanitizedWebhook = sanitizeWebhook(webhook);
 
     return NextResponse.json({ webhook: sanitizedWebhook }, { status: 201 });
   } catch {

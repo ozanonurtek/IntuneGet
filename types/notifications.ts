@@ -18,9 +18,10 @@ export type NotificationStatus = 'pending' | 'sent' | 'failed';
 // Server setup still needed before email notifications can be used
 export type EmailSetupRequirement = 'supabase' | 'resend';
 
-// Shown when a deployment has no Supabase storage for webhook settings
+// Shown when a deployment has no storage for webhook settings: neither
+// Supabase nor the SQLite database is available.
 export const WEBHOOK_STORAGE_UNAVAILABLE_MESSAGE =
-  'Webhook notifications require Supabase to be configured for this deployment.';
+  'Webhook notifications require Supabase or the SQLite database to be configured for this deployment.';
 
 // Self hosting guide section that explains notification setup
 export const NOTIFICATION_SETUP_GUIDE_URL =
