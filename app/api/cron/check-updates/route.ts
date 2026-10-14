@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { getDatabase, isSqliteMode } from '@/lib/db';
 import { runSqliteUpdateCheck } from '@/lib/auto-update/sqlite';
+import { notifyWebhookUsersOfPendingUpdatesSqlite } from '@/lib/notifications/notify-user';
 import { parseVersion, compareVersions } from '@/lib/version-compare';
 import {
   AutoUpdateTrigger,
@@ -264,8 +265,23 @@ export async function GET(request: Request) {
   // packager. Schedule this route externally (see the self-hosting docs).
   if (isSqliteMode()) {
     try {
-      const summary = await runSqliteUpdateCheck(getDatabase());
-      return NextResponse.json({ success: true, mode: 'sqlite', ...summary });
+      const db = getDatabase();
+      const summary = await runSqliteUpdateCheck(db);
+      // Announce the updates this run detected to every user with an enabled
+      // webhook. Delivery failures are collected by the notifier and must not
+      // fail the check itself; the next run retries the pending rows.
+      const notifications = await notifyWebhookUsersOfPendingUpdatesSqlite(db);
+      return NextResponse.json({
+        success: true,
+        mode: 'sqlite',
+        ...summary,
+        notifications: {
+          usersChecked: notifications.usersChecked,
+          webhooksSent: notifications.webhooksSent,
+          updatesNotified: notifications.updatesNotified,
+          errors: notifications.errors.length > 0 ? notifications.errors : undefined,
+        },
+      });
     } catch (error) {
       return NextResponse.json(
         { error: error instanceof Error ? error.message : 'Update check failed' },

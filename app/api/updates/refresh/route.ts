@@ -11,7 +11,7 @@ import { runSqliteUpdateCheck } from '@/lib/auto-update/sqlite';
 import { parseAccessToken } from '@/lib/auth-utils';
 import { resolveTargetTenantId } from '@/lib/msp/tenant-resolution';
 import { GET as getLiveIntuneUpdates } from '@/app/api/intune/apps/updates/route';
-import { notifyUserOfPendingUpdates } from '@/lib/notifications/notify-user';
+import { notifyUserOfPendingUpdates, notifyUserOfPendingUpdatesSqlite } from '@/lib/notifications/notify-user';
 import type { AppUpdateInfo } from '@/types/inventory';
 
 interface RefreshRequestBody {
@@ -62,7 +62,21 @@ export async function POST(request: NextRequest) {
     // Graph matching path needs the hosted consent plus the claimed and manual
     // mapping tables, which a self-hosted deployment does not have.
     if (isSqliteMode()) {
-      const summary = await runSqliteUpdateCheck(getDatabase(), { userId: user.userId });
+      const db = getDatabase();
+      const summary = await runSqliteUpdateCheck(db, { userId: user.userId });
+      // Near-immediate notifications, like the hosted path: when this refresh
+      // surfaced an update, deliver to the user's webhooks after responding
+      // instead of waiting for the nightly job. Failures must not fail the
+      // refresh; the scheduled notifier remains the backstop.
+      if (summary.available > 0) {
+        after(async () => {
+          try {
+            await notifyUserOfPendingUpdatesSqlite(db, user.userId);
+          } catch {
+            console.error('On-demand update notification failed; the scheduled notifier will retry.');
+          }
+        });
+      }
       return NextResponse.json({
         success: true,
         mode: 'sqlite',

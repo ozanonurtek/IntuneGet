@@ -6,11 +6,16 @@
  * whether they are batched nightly or triggered right after a user-facing
  * refresh detects a new update. Keeping this in one place avoids the two
  * paths drifting apart.
+ *
+ * A self-hosted SQLite deployment has no Supabase, so it uses the sibling
+ * SQLite functions below, which read pending updates and enabled webhooks
+ * through the database adapter. Email notifications stay Supabase-only.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { sendUpdateNotificationEmail, isEmailConfigured } from '@/lib/email/service';
 import { deliverWebhook } from '@/lib/webhooks/service';
+import type { DatabaseAdapter } from '@/lib/db/types';
 import type {
   NotificationPreferences,
   WebhookConfiguration,
@@ -318,4 +323,178 @@ async function markNotified(supabase: SupabaseClient, ids: string[]): Promise<vo
       .update({ notified_at: new Date().toISOString() })
       .in('id', chunk);
   }
+}
+
+/**
+ * Deliver webhook notifications for one user's pending updates on a
+ * self-hosted SQLite deployment, then mark the delivered rows notified so the
+ * same update is not announced again on the next run. Email is Supabase-only
+ * and is not attempted here.
+ *
+ * Mirrors notifyUserOfPendingUpdates: ignore/pin policies are honoured and
+ * skipped rows stay pending; rows are only marked notified for tenants where
+ * at least one webhook delivered, so a failure retries on the next run. A
+ * delivery failure is collected, never thrown, so it cannot break the caller.
+ */
+export async function notifyUserOfPendingUpdatesSqlite(
+  db: DatabaseAdapter,
+  userId: string
+): Promise<NotifyUserResult> {
+  const result: NotifyUserResult = {
+    emailsSent: 0,
+    webhooksSent: 0,
+    notifiedUpdateIds: [],
+    errors: [],
+  };
+
+  try {
+    const updates = await db.updateCheckResults.list(userId, { pendingOnly: true });
+    if (updates.length === 0) {
+      return result;
+    }
+
+    // Apply the same per-app update policies as the hosted path: an ignored
+    // app, or a pinned app whose detected version is not the pinned one, is
+    // skipped and stays pending.
+    const policies = await db.updatePolicies.list(userId);
+    const policyByApp = new Map<string, NotificationPolicy>();
+    policies.forEach((policy) => {
+      policyByApp.set(`${policy.tenant_id}:${policy.winget_id}`, policy);
+    });
+    const notifiable = updates.filter(
+      (u) => !shouldSkipUpdate(policyByApp.get(`${u.tenant_id}:${u.winget_id}`), u.latest_version)
+    );
+    if (notifiable.length === 0) {
+      return result;
+    }
+
+    const webhooks = (await db.webhookConfigurations.list(userId)).filter(
+      (webhook) => webhook.is_enabled
+    );
+    if (webhooks.length === 0) {
+      return result;
+    }
+
+    // Group by tenant for the payload, like the hosted path.
+    const tenantUpdates = new Map<string, UpdateCheckResult[]>();
+    notifiable.forEach((u) => {
+      if (!tenantUpdates.has(u.tenant_id)) {
+        tenantUpdates.set(u.tenant_id, []);
+      }
+      tenantUpdates.get(u.tenant_id)!.push(u);
+    });
+
+    for (const [tenantId, tenantUpdateList] of tenantUpdates) {
+      const appUpdates: AppUpdate[] = tenantUpdateList.map((u) => ({
+        app_name: u.display_name,
+        winget_id: u.winget_id,
+        intune_app_id: u.intune_app_id,
+        current_version: u.current_version,
+        latest_version: u.latest_version,
+        is_critical: u.is_critical,
+      }));
+
+      const payload: NotificationPayload = {
+        event: 'app_updates_available',
+        timestamp: new Date().toISOString(),
+        tenant_id: tenantId,
+        updates: appUpdates,
+        summary: {
+          total: appUpdates.length,
+          critical: appUpdates.filter((u) => u.is_critical).length,
+        },
+      };
+
+      let delivered = false;
+
+      for (const webhook of webhooks) {
+        try {
+          const webhookResult = await deliverWebhook(webhook, payload);
+
+          await db.webhookConfigurations.markDelivery(
+            webhook.id,
+            userId,
+            webhookResult.success,
+            (webhook.failure_count || 0) + 1
+          );
+
+          if (webhookResult.success) {
+            delivered = true;
+            result.webhooksSent++;
+          } else {
+            result.errors.push(`Webhook ${webhook.name} failed: ${webhookResult.error}`);
+          }
+        } catch (error) {
+          // One webhook's failure must not stop the others or the run.
+          result.errors.push(
+            `Webhook ${webhook.name} failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+          );
+        }
+      }
+
+      // Only mark updates notified when at least one webhook delivered, so an
+      // undelivered update is retried on the next run.
+      if (delivered) {
+        result.notifiedUpdateIds.push(...tenantUpdateList.map((u) => u.id));
+      }
+    }
+
+    await db.updateCheckResults.setNotified(
+      result.notifiedUpdateIds,
+      userId,
+      new Date().toISOString()
+    );
+  } catch (error) {
+    // A storage failure is reported, not thrown, so the nightly job finishes.
+    result.errors.push(
+      `SQLite notification run failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+    );
+  }
+
+  return result;
+}
+
+/**
+ * Deliver webhook notifications for every user with an enabled webhook. Used
+ * by the nightly SQLite update check, which has no per-user list of its own.
+ * One user's failure never stops the rest of the run.
+ */
+export async function notifyWebhookUsersOfPendingUpdatesSqlite(db: DatabaseAdapter): Promise<{
+  usersChecked: number;
+  webhooksSent: number;
+  updatesNotified: number;
+  errors: string[];
+}> {
+  const summary = {
+    usersChecked: 0,
+    webhooksSent: 0,
+    updatesNotified: 0,
+    errors: [] as string[],
+  };
+
+  let userIds: string[];
+  try {
+    userIds = await db.webhookConfigurations.listEnabledUserIds();
+  } catch (error) {
+    summary.errors.push(
+      `Failed to list users with webhooks: ${error instanceof Error ? error.message : 'Unknown error'}`
+    );
+    return summary;
+  }
+
+  for (const userId of userIds) {
+    summary.usersChecked++;
+    try {
+      const res = await notifyUserOfPendingUpdatesSqlite(db, userId);
+      summary.webhooksSent += res.webhooksSent;
+      summary.updatesNotified += res.notifiedUpdateIds.length;
+      summary.errors.push(...res.errors);
+    } catch (error) {
+      summary.errors.push(
+        `Notification run failed for user ${userId}: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  return summary;
 }
