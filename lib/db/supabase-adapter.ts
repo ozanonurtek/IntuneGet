@@ -25,6 +25,9 @@ import type {
   ManualAppMappingRecord,
   UpdateCheckQuery,
   UpdateCheckResult,
+  WebhookConfigurationCreate,
+  WebhookConfigurationPatch,
+  WebhookConfigurationRecord,
 } from './types';
 import type { PostgrestError } from '@supabase/supabase-js';
 
@@ -872,6 +875,7 @@ export const supabaseDb: DatabaseAdapter = {
       const supabase = createServerClient();
       let builder = supabase.from('update_check_results').select('*').eq('user_id', userId);
       if (query.tenantId) builder = builder.eq('tenant_id', query.tenantId);
+      if (query.pendingOnly) builder = builder.is('notified_at', null);
       if (!query.includeDismissed) builder = builder.is('dismissed_at', null);
       if (query.criticalOnly) builder = builder.eq('is_critical', true);
 
@@ -969,6 +973,21 @@ export const supabaseDb: DatabaseAdapter = {
         .in('id', ids);
       if (isError(error)) {
         console.error('Error dismissing update check results:', error);
+        throw error;
+      }
+      return count ?? 0;
+    },
+
+    async setNotified(ids: string[], userId: string, notifiedAt: string | null): Promise<number> {
+      if (ids.length === 0) return 0;
+      const supabase = createServerClient();
+      const { count, error } = await supabase
+        .from('update_check_results')
+        .update({ notified_at: notifiedAt, updated_at: new Date().toISOString() }, { count: 'exact' })
+        .eq('user_id', userId)
+        .in('id', ids);
+      if (isError(error)) {
+        console.error('Error marking update check results notified:', error);
         throw error;
       }
       return count ?? 0;
@@ -1236,6 +1255,59 @@ export const supabaseDb: DatabaseAdapter = {
     async get(_tenantId: string, _discoveredAppId: string): Promise<DiscoveredAppGroupRecord | null> {
       console.warn('[Supabase adapter] discoveredAppGroups.get is a SQLite-mode no-op');
       return null;
+    },
+  },
+
+  webhookConfigurations: {
+    // Supabase mode manages webhook configurations through its own API routes
+    // and notification helper, which query webhook_configurations with the
+    // service-role client directly. These methods exist so the adapter stays
+    // complete for the SQLite-only webhook paths and are never called in
+    // Supabase mode.
+    async list(_userId: string): Promise<WebhookConfigurationRecord[]> {
+      console.warn('[Supabase adapter] webhookConfigurations.list is a SQLite-mode no-op');
+      return [];
+    },
+
+    async get(_id: string, _userId: string): Promise<WebhookConfigurationRecord | null> {
+      console.warn('[Supabase adapter] webhookConfigurations.get is a SQLite-mode no-op');
+      return null;
+    },
+
+    async count(_userId: string): Promise<number> {
+      console.warn('[Supabase adapter] webhookConfigurations.count is a SQLite-mode no-op');
+      return 0;
+    },
+
+    async create(_input: WebhookConfigurationCreate): Promise<WebhookConfigurationRecord> {
+      throw new Error('webhookConfigurations.create is a SQLite-mode no-op');
+    },
+
+    async update(
+      _id: string,
+      _userId: string,
+      _data: WebhookConfigurationPatch
+    ): Promise<WebhookConfigurationRecord | null> {
+      throw new Error('webhookConfigurations.update is a SQLite-mode no-op');
+    },
+
+    async delete(_id: string, _userId: string): Promise<boolean> {
+      console.warn('[Supabase adapter] webhookConfigurations.delete is a SQLite-mode no-op');
+      return false;
+    },
+
+    async listEnabledUserIds(): Promise<string[]> {
+      console.warn('[Supabase adapter] webhookConfigurations.listEnabledUserIds is a SQLite-mode no-op');
+      return [];
+    },
+
+    async markDelivery(
+      _id: string,
+      _userId: string,
+      _delivered: boolean,
+      _failureCount: number
+    ): Promise<void> {
+      console.warn('[Supabase adapter] webhookConfigurations.markDelivery is a SQLite-mode no-op');
     },
   },
 };

@@ -10,6 +10,7 @@ import type {
   AutoUpdateHistoryWithPolicy,
   AutoUpdateStatus,
 } from '@/types/update-policies';
+import type { WebhookConfiguration, WebhookConfigurationUpdate } from '@/types/notifications';
 
 /**
  * Query options for auto-update history reads.
@@ -48,6 +49,8 @@ export interface UpdateCheckQuery {
   tenantId?: string;
   includeDismissed?: boolean;
   criticalOnly?: boolean;
+  /** Only rows never announced (notified_at null) and not dismissed. */
+  pendingOnly?: boolean;
 }
 
 /**
@@ -191,6 +194,25 @@ export type DiscoveredAppGroupInput = Pick<
   DiscoveredAppGroupRecord,
   'tenant_id' | 'discovered_app_id' | 'merged_app_ids' | 'device_count'
 >;
+
+/**
+ * A stored webhook configuration. Mirrors the Supabase
+ * webhook_configurations row; tenant_id is recorded for traceability on
+ * self-hosted deployments and is not part of any unique key.
+ */
+export type WebhookConfigurationRecord = WebhookConfiguration & {
+  tenant_id: string | null;
+};
+
+export type WebhookConfigurationCreate = Pick<
+  WebhookConfiguration,
+  'user_id' | 'name' | 'url' | 'webhook_type'
+> &
+  Partial<Pick<WebhookConfiguration, 'secret' | 'headers' | 'is_enabled'>> & {
+    tenant_id?: string | null;
+  };
+
+export type WebhookConfigurationPatch = WebhookConfigurationUpdate;
 
 /**
  * Upload history record
@@ -356,6 +378,12 @@ export interface DatabaseAdapter {
     setDismissed(ids: string[], userId: string, dismissedAt: string | null): Promise<number>;
 
     /**
+     * Mark detected updates owned by the user as announced, so the same
+     * update is not notified again on later runs. Returns the rows changed.
+     */
+    setNotified(ids: string[], userId: string, notifiedAt: string | null): Promise<number>;
+
+    /**
      * Delete detected updates for a user and tenant that are no longer current.
      */
     deleteMissing(
@@ -501,5 +529,57 @@ export interface DatabaseAdapter {
      * The stored group for one winner id, or null when no scan recorded it.
      */
     get(tenantId: string, discoveredAppId: string): Promise<DiscoveredAppGroupRecord | null>;
+  };
+
+  webhookConfigurations: {
+    /**
+     * Every webhook of the user, newest first.
+     */
+    list(userId: string): Promise<WebhookConfigurationRecord[]>;
+
+    /**
+     * One webhook owned by the user, or null.
+     */
+    get(id: string, userId: string): Promise<WebhookConfigurationRecord | null>;
+
+    /** How many webhooks the user has stored. */
+    count(userId: string): Promise<number>;
+
+    /**
+     * Store a new webhook for the user.
+     */
+    create(input: WebhookConfigurationCreate): Promise<WebhookConfigurationRecord>;
+
+    /**
+     * Update a webhook owned by the user. Returns null when no row matched.
+     */
+    update(
+      id: string,
+      userId: string,
+      data: WebhookConfigurationPatch
+    ): Promise<WebhookConfigurationRecord | null>;
+
+    /**
+     * Delete a webhook owned by the user. Returns false when no row matched.
+     */
+    delete(id: string, userId: string): Promise<boolean>;
+
+    /**
+     * Every user id that has at least one enabled webhook. Used by the nightly
+     * SQLite update check to decide who to notify.
+     */
+    listEnabledUserIds(): Promise<string[]>;
+
+    /**
+     * Persist the circuit-breaker counters after a delivery attempt: a success
+     * resets the failure count and stamps last_success_at, a failure bumps the
+     * count and stamps last_failure_at.
+     */
+    markDelivery(
+      id: string,
+      userId: string,
+      delivered: boolean,
+      failureCount: number
+    ): Promise<void>;
   };
 }

@@ -24,6 +24,9 @@ import type {
   DiscoveredAppGroupRecord,
   ManualAppMappingInput,
   ManualAppMappingRecord,
+  WebhookConfigurationCreate,
+  WebhookConfigurationPatch,
+  WebhookConfigurationRecord,
 } from './types';
 import type {
   AppUpdatePolicy,
@@ -104,6 +107,14 @@ function parseManualMappingRow(row: Record<string, unknown>): ManualAppMappingRe
     ...row,
     is_verified: Boolean(row.is_verified),
   } as unknown as ManualAppMappingRecord;
+}
+
+function parseWebhookRow(row: Record<string, unknown>): WebhookConfigurationRecord {
+  return {
+    ...row,
+    headers: row.headers ? JSON.parse(row.headers as string) : {},
+    is_enabled: Boolean(row.is_enabled),
+  } as unknown as WebhookConfigurationRecord;
 }
 
 /**
@@ -790,6 +801,9 @@ export const sqliteDb: DatabaseAdapter = {
         conditions.push('tenant_id = ?');
         values.push(query.tenantId);
       }
+      if (query.pendingOnly) {
+        conditions.push('notified_at IS NULL');
+      }
       if (!query.includeDismissed) {
         conditions.push('dismissed_at IS NULL');
       }
@@ -828,6 +842,11 @@ export const sqliteDb: DatabaseAdapter = {
              latest_version = excluded.latest_version,
              is_critical = excluded.is_critical,
              is_managed = excluded.is_managed,
+             notified_at = CASE
+               WHEN update_check_results.latest_version = excluded.latest_version
+                 THEN update_check_results.notified_at
+               ELSE NULL
+             END,
              updated_at = excluded.updated_at`
         )
         .run(
@@ -869,6 +888,20 @@ export const sqliteDb: DatabaseAdapter = {
            WHERE user_id = ? AND id IN (${placeholders})`
         )
         .run(dismissedAt, new Date().toISOString(), userId, ...ids);
+      return result.changes;
+    },
+
+    async setNotified(ids: string[], userId: string, notifiedAt: string | null): Promise<number> {
+      if (ids.length === 0) return 0;
+      const database = getDb();
+      const placeholders = ids.map(() => '?').join(', ');
+      const result = database
+        .prepare(
+          `UPDATE update_check_results
+           SET notified_at = ?, updated_at = ?
+           WHERE user_id = ? AND id IN (${placeholders})`
+        )
+        .run(notifiedAt, new Date().toISOString(), userId, ...ids);
       return result.changes;
     },
 
@@ -1121,6 +1154,129 @@ export const sqliteDb: DatabaseAdapter = {
         device_count: row.device_count as number,
         updated_at: row.updated_at as string,
       };
+    },
+  },
+
+  webhookConfigurations: {
+    async list(userId: string): Promise<WebhookConfigurationRecord[]> {
+      const database = getDb();
+      const rows = database
+        .prepare('SELECT * FROM webhook_configurations WHERE user_id = ? ORDER BY created_at DESC, id DESC')
+        .all(userId) as Record<string, unknown>[];
+      return rows.map(parseWebhookRow);
+    },
+
+    async get(id: string, userId: string): Promise<WebhookConfigurationRecord | null> {
+      const database = getDb();
+      const row = database
+        .prepare('SELECT * FROM webhook_configurations WHERE id = ? AND user_id = ?')
+        .get(id, userId) as Record<string, unknown> | undefined;
+      return row ? parseWebhookRow(row) : null;
+    },
+
+    async count(userId: string): Promise<number> {
+      const database = getDb();
+      const row = database
+        .prepare('SELECT COUNT(*) AS count FROM webhook_configurations WHERE user_id = ?')
+        .get(userId) as { count: number };
+      return row.count;
+    },
+
+    async create(input: WebhookConfigurationCreate): Promise<WebhookConfigurationRecord> {
+      const database = getDb();
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      database
+        .prepare(
+          `INSERT INTO webhook_configurations (
+             id, user_id, tenant_id, name, url, webhook_type, secret, headers,
+             is_enabled, failure_count, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+        )
+        .run(
+          id,
+          input.user_id,
+          input.tenant_id ?? null,
+          input.name,
+          input.url,
+          input.webhook_type,
+          input.secret ?? null,
+          JSON.stringify(input.headers ?? {}),
+          input.is_enabled === false ? 0 : 1,
+          now,
+          now
+        );
+      const stored = await sqliteDb.webhookConfigurations.get(id, input.user_id);
+      if (!stored) throw new Error('Failed to store webhook configuration');
+      return stored;
+    },
+
+    async update(
+      id: string,
+      userId: string,
+      data: WebhookConfigurationPatch
+    ): Promise<WebhookConfigurationRecord | null> {
+      const database = getDb();
+      const fields: Record<string, unknown> = {};
+      if (data.name !== undefined) fields.name = data.name;
+      if (data.url !== undefined) fields.url = data.url;
+      if (data.webhook_type !== undefined) fields.webhook_type = data.webhook_type;
+      if (data.headers !== undefined) fields.headers = JSON.stringify(data.headers);
+      if (data.is_enabled !== undefined) fields.is_enabled = data.is_enabled ? 1 : 0;
+      if ('secret' in data) fields.secret = data.secret ?? null;
+      if (Object.keys(fields).length === 0) {
+        return sqliteDb.webhookConfigurations.get(id, userId);
+      }
+      const { clause, values } = buildSetClause(fields);
+      const result = database
+        .prepare(`UPDATE webhook_configurations SET ${clause} WHERE id = ? AND user_id = ?`)
+        .run(...values, id, userId);
+      if (result.changes === 0) return null;
+      return sqliteDb.webhookConfigurations.get(id, userId);
+    },
+
+    async delete(id: string, userId: string): Promise<boolean> {
+      const database = getDb();
+      const result = database
+        .prepare('DELETE FROM webhook_configurations WHERE id = ? AND user_id = ?')
+        .run(id, userId);
+      return result.changes > 0;
+    },
+
+    async listEnabledUserIds(): Promise<string[]> {
+      const database = getDb();
+      const rows = database
+        .prepare(
+          'SELECT DISTINCT user_id FROM webhook_configurations WHERE is_enabled = 1 ORDER BY user_id'
+        )
+        .all() as Array<{ user_id: string }>;
+      return rows.map((row) => row.user_id);
+    },
+
+    async markDelivery(id: string, userId: string, delivered: boolean, failureCount: number): Promise<void> {
+      const database = getDb();
+      const now = new Date().toISOString();
+      // Mirror the hosted path: a success resets the failure count and stamps
+      // last_success_at; a failure bumps the count and stamps last_failure_at.
+      // The opposite timestamp keeps its previous value. A row deleted while a
+      // delivery was in flight simply no longer matches.
+      if (delivered) {
+        database
+          .prepare(
+            `UPDATE webhook_configurations
+             SET failure_count = 0, last_success_at = ?, updated_at = ?
+             WHERE id = ? AND user_id = ?`
+          )
+          .run(now, now, id, userId);
+      } else {
+        database
+          .prepare(
+            `UPDATE webhook_configurations
+             SET failure_count = ?, last_failure_at = ?, updated_at = ?
+             WHERE id = ? AND user_id = ?`
+          )
+          .run(failureCount, now, now, id, userId);
+      }
     },
   },
 };

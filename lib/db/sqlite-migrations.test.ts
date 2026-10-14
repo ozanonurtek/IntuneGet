@@ -31,6 +31,7 @@ describe('sqlite migrations', () => {
         'claimed_apps',
         'manual_app_mappings',
         'discovered_app_groups',
+        'webhook_configurations',
       ])
     );
     db.close();

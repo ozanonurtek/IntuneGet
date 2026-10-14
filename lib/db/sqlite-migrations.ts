@@ -302,6 +302,32 @@ export const MIGRATIONS: SqliteMigration[] = [
       `);
     },
   },
+  {
+    version: 8,
+    name: 'webhook configurations',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS webhook_configurations (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          tenant_id TEXT,
+          name TEXT NOT NULL,
+          url TEXT NOT NULL,
+          webhook_type TEXT NOT NULL DEFAULT 'custom',
+          secret TEXT,
+          headers TEXT NOT NULL DEFAULT '{}',
+          is_enabled INTEGER NOT NULL DEFAULT 1,
+          failure_count INTEGER NOT NULL DEFAULT 0,
+          last_failure_at TEXT,
+          last_success_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_webhook_configurations_user_id ON webhook_configurations(user_id);
+      `);
+    },
+  },
 ];
 
 export function getSqliteSchemaVersion(db: BetterSqlite3.Database): number {
