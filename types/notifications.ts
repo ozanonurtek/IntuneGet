@@ -7,7 +7,7 @@
 export type EmailFrequency = 'immediate' | 'daily' | 'weekly';
 
 // Webhook types
-export type WebhookType = 'slack' | 'teams' | 'discord' | 'custom';
+export type WebhookType = 'slack' | 'teams' | 'discord' | 'googlechat' | 'custom';
 
 // Notification channels
 export type NotificationChannel = 'email' | 'webhook';
@@ -283,6 +283,60 @@ export interface DiscordField {
   name: string;
   value: string;
   inline?: boolean;
+}
+
+/**
+ * Google Chat cardsV2 Message
+ * Accepted by Google Chat incoming webhooks. Unlike the other platforms the
+ * Google Chat API rejects unknown fields, so this payload carries no `data`
+ * side-channel.
+ */
+export interface GoogleChatMessage {
+  text: string;
+  cardsV2: GoogleChatCardWithId[];
+}
+
+export interface GoogleChatCardWithId {
+  cardId: string;
+  card: GoogleChatCard;
+}
+
+export interface GoogleChatCard {
+  header: {
+    title: string;
+    subtitle?: string;
+    imageUrl?: string;
+    imageType?: string;
+    imageAltText?: string;
+  };
+  sections: GoogleChatSection[];
+}
+
+export interface GoogleChatSection {
+  header?: string;
+  widgets: GoogleChatWidget[];
+}
+
+export interface GoogleChatWidget {
+  textParagraph?: {
+    text: string;
+  };
+  decoratedText?: {
+    text: string;
+    wrapText?: boolean;
+  };
+  buttonList?: {
+    buttons: GoogleChatButton[];
+  };
+}
+
+export interface GoogleChatButton {
+  text: string;
+  onClick: {
+    openLink: {
+      url: string;
+    };
+  };
 }
 
 /**

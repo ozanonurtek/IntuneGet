@@ -1366,7 +1366,7 @@ export interface Database {
           user_id: string;
           name: string;
           url: string;
-          webhook_type: 'slack' | 'teams' | 'discord' | 'custom';
+          webhook_type: 'slack' | 'teams' | 'discord' | 'googlechat' | 'custom';
           secret: string | null;
           headers: Record<string, string>;
           is_enabled: boolean;
@@ -1381,7 +1381,7 @@ export interface Database {
           user_id: string;
           name: string;
           url: string;
-          webhook_type: 'slack' | 'teams' | 'discord' | 'custom';
+          webhook_type: 'slack' | 'teams' | 'discord' | 'googlechat' | 'custom';
           secret?: string | null;
           headers?: Record<string, string>;
           is_enabled?: boolean;
@@ -1396,7 +1396,7 @@ export interface Database {
           user_id?: string;
           name?: string;
           url?: string;
-          webhook_type?: 'slack' | 'teams' | 'discord' | 'custom';
+          webhook_type?: 'slack' | 'teams' | 'discord' | 'googlechat' | 'custom';
           secret?: string | null;
           headers?: Record<string, string>;
           is_enabled?: boolean;

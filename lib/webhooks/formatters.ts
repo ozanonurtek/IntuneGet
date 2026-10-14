@@ -7,6 +7,8 @@ import type {
   NotificationPayload,
   WebhookTestPayload,
   AppUpdate,
+  GoogleChatMessage,
+  GoogleChatSection,
 } from '@/types/notifications';
 
 // Machine-readable data included alongside the presentation payload
@@ -307,6 +309,97 @@ export function formatTeamsMessage(payload: NotificationPayload): TeamsPayload {
 }
 
 /**
+ * Format notification payload for Google Chat (cardsV2).
+ *
+ * Google Chat incoming webhooks accept a message body with a plain `text`
+ * fallback and `cardsV2` cards, and the API rejects unknown fields, so this
+ * payload deliberately carries no `data` side-channel.
+ */
+export function formatGoogleChatMessage(payload: NotificationPayload): GoogleChatMessage {
+  const { updates, summary, tenant_name } = payload;
+
+  const title = summary.critical > 0
+    ? `${summary.critical} Critical App Update${summary.critical > 1 ? 's' : ''} Available`
+    : `${summary.total} App Update${summary.total > 1 ? 's' : ''} Available`;
+  const subtitle = `IntuneGet | ${new Date(payload.timestamp).toLocaleString()}${tenant_name ? ` | Tenant: ${tenant_name}` : ''}`;
+
+  // One section per update: the app name as the section header, the version
+  // transition as a decorated text line, plus a critical marker when set.
+  const sections: GoogleChatSection[] = updates.map((app) => ({
+    header: app.is_critical ? `${app.app_name} (critical)` : app.app_name,
+    widgets: [
+      {
+        decoratedText: {
+          text: `<b>${escapeGoogleChatText(app.current_version)} &rarr; ${escapeGoogleChatText(app.latest_version)}</b>`,
+          wrapText: true,
+        },
+      },
+      {
+        textParagraph: {
+          text: escapeGoogleChatText(app.winget_id),
+        },
+      },
+    ],
+  }));
+
+  // Plain text fallback for clients that render the text body instead of cards.
+  const text = [
+    title,
+    subtitle,
+    '',
+    ...updates.map(
+      (app) =>
+        `- ${app.app_name}${app.is_critical ? ' (critical)' : ''}: ${app.current_version} -> ${app.latest_version}`
+    ),
+  ].join('\n');
+
+  return {
+    text,
+    cardsV2: [
+      {
+        cardId: 'intuneget-updates',
+        card: {
+          header: {
+            title,
+            subtitle,
+          },
+          sections: [
+            ...sections,
+            {
+              widgets: [
+                {
+                  buttonList: {
+                    buttons: [
+                      {
+                        text: 'View in Dashboard',
+                        onClick: {
+                          openLink: {
+                            url: process.env.NEXT_PUBLIC_APP_URL
+                              ? `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`
+                              : 'https://intuneget.com/dashboard',
+                          },
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+/**
+ * Escape text that goes into a Google Chat card's HTML-like markup
+ */
+function escapeGoogleChatText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
  * Format a single app update for Teams
  */
 function formatTeamsAppCard(app: AppUpdate) {
@@ -515,6 +608,51 @@ export function formatTeamsTestMessage(payload: WebhookTestPayload): TeamsPayloa
               text: 'Configuration successful!',
               weight: 'Bolder',
               wrap: true,
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+/**
+ * Format test message for Google Chat (cardsV2)
+ */
+export function formatGoogleChatTestMessage(payload: WebhookTestPayload): GoogleChatMessage {
+  return {
+    text: `IntuneGet Webhook Test\n${payload.message}\nWebhook: ${payload.webhook_name} | ${new Date(payload.timestamp).toLocaleString()}\nConfiguration successful!`,
+    cardsV2: [
+      {
+        cardId: 'intuneget-webhook-test',
+        card: {
+          header: {
+            title: 'IntuneGet Webhook Test',
+            subtitle: payload.webhook_name,
+          },
+          sections: [
+            {
+              widgets: [
+                {
+                  textParagraph: {
+                    text: escapeGoogleChatText(payload.message),
+                  },
+                },
+                {
+                  decoratedText: {
+                    text: `Time: ${new Date(payload.timestamp).toLocaleString()}`,
+                  },
+                },
+              ],
+            },
+            {
+              widgets: [
+                {
+                  textParagraph: {
+                    text: '<b>Configuration successful!</b>',
+                  },
+                },
+              ],
             },
           ],
         },

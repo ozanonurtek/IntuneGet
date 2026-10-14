@@ -15,14 +15,27 @@ import {
   formatTeamsMessage,
   formatDiscordMessage,
   formatCustomPayload,
+  formatGoogleChatMessage,
   formatSlackTestMessage,
   formatTeamsTestMessage,
   formatDiscordTestMessage,
+  formatGoogleChatTestMessage,
 } from './formatters';
 
 // Circuit breaker thresholds
 const MAX_FAILURES = 5;
 const CIRCUIT_BREAKER_RESET_MINUTES = 30;
+
+/**
+ * Google Chat webhook URLs carry the space key and token in the query string,
+ * so the URL is a secret and is masked exactly like the secret field wherever
+ * it would be echoed back.
+ */
+export const MASKED_WEBHOOK_URL = '********';
+
+export function maskWebhookUrl(webhook: Pick<WebhookConfiguration, 'url' | 'webhook_type'>): string {
+  return webhook.webhook_type === 'googlechat' ? MASKED_WEBHOOK_URL : webhook.url;
+}
 
 export interface WebhookDeliveryResult {
   success: boolean;
@@ -84,6 +97,8 @@ export function formatPayload(
       return formatTeamsMessage(payload);
     case 'discord':
       return formatDiscordMessage(payload);
+    case 'googlechat':
+      return formatGoogleChatMessage(payload);
     case 'custom':
     default:
       return formatCustomPayload(payload);
@@ -111,6 +126,8 @@ export function formatTestPayload(
       return formatTeamsTestMessage(testPayload);
     case 'discord':
       return formatDiscordTestMessage(testPayload);
+    case 'googlechat':
+      return formatGoogleChatTestMessage(testPayload);
     case 'custom':
     default:
       return { ...testPayload, data: testPayload };
@@ -298,7 +315,8 @@ export function validateWebhookUrl(url: string): { valid: boolean; error?: strin
     if (
       url.includes('hooks.slack.com') ||
       url.includes('webhook.office.com') ||
-      url.includes('discord.com/api/webhooks')
+      url.includes('discord.com/api/webhooks') ||
+      url.includes('chat.googleapis.com/v1/spaces/')
     ) {
       return { valid: true };
     }
@@ -322,6 +340,9 @@ export function detectWebhookType(url: string): WebhookType | null {
   }
   if (url.includes('discord.com/api/webhooks')) {
     return 'discord';
+  }
+  if (url.includes('chat.googleapis.com/v1/spaces/')) {
+    return 'googlechat';
   }
   return null;
 }

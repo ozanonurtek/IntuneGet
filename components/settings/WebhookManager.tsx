@@ -29,6 +29,7 @@ const WEBHOOK_TYPE_LABELS: Record<WebhookType, { label: string; color: string }>
   slack: { label: 'Slack', color: 'text-[#4A154B] bg-[#4A154B]/10' },
   teams: { label: 'Teams', color: 'text-[#6264A7] bg-[#6264A7]/10' },
   discord: { label: 'Discord', color: 'text-[#5865F2] bg-[#5865F2]/10' },
+  googlechat: { label: 'Google Chat', color: 'text-[#00AC47] bg-[#00AC47]/10' },
   custom: { label: 'Custom', color: 'text-text-secondary bg-overlay/5' },
 };
 
@@ -271,7 +272,7 @@ export function WebhookManager({ className }: WebhookManagerProps) {
           </div>
           <div>
             <h2 className="text-lg font-semibold text-text-primary">Webhook Notifications</h2>
-            <p className="text-sm text-text-secondary">Send updates to Slack, Teams, or Discord</p>
+            <p className="text-sm text-text-secondary">Send updates to Slack, Teams, Discord, or Google Chat</p>
           </div>
         </div>
 
@@ -310,7 +311,7 @@ export function WebhookManager({ className }: WebhookManagerProps) {
           </div>
           <p className="text-text-secondary mb-2">No webhooks configured</p>
           <p className="text-sm text-text-muted">
-            Add a webhook to receive notifications in Slack, Teams, or Discord
+            Add a webhook to receive notifications in Slack, Teams, Discord, or Google Chat
           </p>
         </div>
       ) : (

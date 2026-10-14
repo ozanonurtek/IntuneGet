@@ -37,6 +37,11 @@ const WEBHOOK_TYPES: { value: WebhookType; label: string; placeholder: string }[
     placeholder: 'https://discord.com/api/webhooks/...',
   },
   {
+    value: 'googlechat',
+    label: 'Google Chat',
+    placeholder: 'https://chat.googleapis.com/v1/spaces/.../messages?key=...&token=...',
+  },
+  {
     value: 'custom',
     label: 'Custom',
     placeholder: 'https://your-endpoint.com/webhook',
@@ -192,7 +197,7 @@ export function WebhookFormModal({
             <label className="block text-sm font-medium text-text-primary mb-1">
               Type
             </label>
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
               {WEBHOOK_TYPES.map((type) => (
                 <button
                   key={type.value}
