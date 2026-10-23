@@ -271,6 +271,22 @@ describe('GET /api/package (userId listing)', () => {
     expect(response.status).toBe(200);
     expect(body.jobs[0].status).toBe('packaging');
   });
+
+  it('lists tenant jobs from the token tenant without Supabase', async () => {
+    isSupabaseServerConfiguredMock.mockReturnValue(false);
+    const getByTenantIdMock = vi.fn().mockResolvedValue([makeJob({ id: 'job-teammate', user_id: 'user-2' })]);
+    getDatabaseMock.mockReturnValue({ jobs: { getByTenantId: getByTenantIdMock } });
+    const { createServerClient } = await import('@/lib/supabase');
+
+    const request = new NextRequest('http://localhost:3000/api/package?scope=tenant');
+    const response = await GET(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(createServerClient).not.toHaveBeenCalled();
+    expect(getByTenantIdMock).toHaveBeenCalledWith('tenant-1', 50);
+    expect(body).toEqual({ jobs: [expect.objectContaining({ id: 'job-teammate' })], scope: 'tenant' });
+  });
 });
 
 describe('POST /api/package (workflow dispatch)', () => {

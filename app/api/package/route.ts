@@ -1078,12 +1078,14 @@ export async function GET(request: NextRequest) {
     const scope = searchParams.get('scope');
     if (scope === 'tenant') {
       const mspTenantId = request.headers.get('X-MSP-Tenant-Id');
-      const { tenantId, errorResponse } = await resolveTargetTenantId({
-        supabase: createServerClient(),
-        userId: user.userId,
-        tokenTenantId: user.tenantId,
-        requestedTenantId: mspTenantId,
-      });
+      const { tenantId, errorResponse } = isSupabaseServerConfigured()
+        ? await resolveTargetTenantId({
+            supabase: createServerClient(),
+            userId: user.userId,
+            tokenTenantId: user.tenantId,
+            requestedTenantId: mspTenantId,
+          })
+        : { tenantId: user.tenantId, errorResponse: null };
       if (errorResponse) {
         return errorResponse;
       }
