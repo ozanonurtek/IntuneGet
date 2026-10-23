@@ -22,6 +22,8 @@ type DB = BetterSqlite3.Database;
 export interface SnapshotSecurityVerdict {
   malicious: number;
   totalEngines: number | null;
+  /** A completed scan with engine coverage and no malicious or suspicious hits. */
+  coveredClean: boolean;
 }
 
 export interface SnapshotQaEvidenceQuery {
@@ -46,13 +48,22 @@ function tableExists(db: DB, name: string): boolean {
   );
 }
 
-function toVerdict(row: {
+interface VerdictRow {
+  completed: number;
   malicious: number | null;
+  suspicious: number | null;
   total_engines: number | null;
-} | undefined): SnapshotSecurityVerdict | null {
-  return row
-    ? { malicious: row.malicious ?? 0, totalEngines: row.total_engines ?? null }
-    : null;
+}
+
+function toVerdict(row: VerdictRow | undefined): SnapshotSecurityVerdict | null {
+  if (!row) return null;
+  const totalEngines = row.total_engines ?? null;
+  return {
+    malicious: row.malicious ?? 0,
+    totalEngines,
+    coveredClean: row.completed === 1 && row.malicious === 0 && row.suspicious === 0 &&
+      Number.isInteger(totalEngines) && (totalEngines as number) > 0,
+  };
 }
 
 /**
@@ -70,10 +81,11 @@ export function snapshotSecurityVerdictFromDb(
 
   if (tableExists(db, 'catalog_file_reputation')) {
     const row = db
-      .prepare('SELECT malicious, total_engines FROM catalog_file_reputation WHERE sha256 = ?')
-      .get(sha) as
-      | { malicious: number | null; total_engines: number | null }
-      | undefined;
+      .prepare(
+        `SELECT status = 'found' AS completed, malicious, suspicious, total_engines
+         FROM catalog_file_reputation WHERE sha256 = ?`
+      )
+      .get(sha) as VerdictRow | undefined;
     if (row) return toVerdict(row);
   }
 
@@ -83,16 +95,15 @@ export function snapshotSecurityVerdictFromDb(
     return toVerdict(
       db
         .prepare(
-          `SELECT virustotal_malicious AS malicious, virustotal_total_engines AS total_engines
+          `SELECT virustotal_status = 'clean' AS completed, virustotal_malicious AS malicious,
+                  virustotal_suspicious AS suspicious, virustotal_total_engines AS total_engines
            FROM qa_results
            WHERE lower(installer_sha256) = ?
              AND virustotal_status IN ('clean', 'flagged', 'suspicious')
            ORDER BY virustotal_scanned_at_utc DESC
            LIMIT 1`
         )
-        .get(sha) as
-        | { malicious: number | null; total_engines: number | null }
-        | undefined
+        .get(sha) as VerdictRow | undefined
     );
   }
 

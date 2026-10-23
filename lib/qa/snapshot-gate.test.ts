@@ -144,7 +144,7 @@ describe('snapshot gate evidence', () => {
 
     const evidence = readSnapshotQaEvidenceFromDb(db, query);
     expect(evidence.available).toBe(true);
-    expect(evidence.securityVerdict).toEqual({ malicious: 3, totalEngines: 72 });
+    expect(evidence.securityVerdict).toEqual({ malicious: 3, totalEngines: 72, coveredClean: false });
   });
 
   it('does not treat a clean reputation row as malicious', () => {
@@ -153,8 +153,29 @@ describe('snapshot gate evidence', () => {
     ).run(installerSha.toLowerCase(), 'found', 0, 0, 72, '2026-10-01T00:00:00Z');
 
     const evidence = readSnapshotQaEvidenceFromDb(db, query);
-    expect(evidence.securityVerdict).toEqual({ malicious: 0, totalEngines: 72 });
+    expect(evidence.securityVerdict).toEqual({ malicious: 0, totalEngines: 72, coveredClean: true });
     expect(evidence.securityVerdict?.malicious ?? 0).toBeLessThan(1);
+  });
+
+  it('does not treat a pending reputation row as covered clean', () => {
+    db.prepare(
+      'INSERT INTO catalog_file_reputation (sha256, status, malicious, suspicious, total_engines, analyzed_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(installerSha.toLowerCase(), 'pending', null, null, null, null);
+
+    expect(readSnapshotQaEvidenceFromDb(db, query).securityVerdict?.coveredClean).toBe(false);
+  });
+
+  it('reads a covered clean verdict from the legacy qa_results columns', () => {
+    insertQaRow(db, {
+      installer_sha256: installerSha.toLowerCase(),
+      virustotal_status: 'clean',
+      virustotal_malicious: 0,
+      virustotal_suspicious: 0,
+      virustotal_total_engines: 70,
+      virustotal_scanned_at_utc: '2026-10-01T00:00:00Z',
+    });
+
+    expect(readSnapshotQaEvidenceFromDb(db, query).securityVerdict?.coveredClean).toBe(true);
   });
 
   it('falls back to the legacy qa_results VirusTotal columns without a reputation row', () => {
@@ -168,7 +189,7 @@ describe('snapshot gate evidence', () => {
     });
 
     const evidence = readSnapshotQaEvidenceFromDb(db, query);
-    expect(evidence.securityVerdict).toEqual({ malicious: 2, totalEngines: 70 });
+    expect(evidence.securityVerdict).toEqual({ malicious: 2, totalEngines: 70, coveredClean: false });
   });
 
   it('uses the legacy fallback when the reputation table is absent entirely', () => {
@@ -183,7 +204,7 @@ describe('snapshot gate evidence', () => {
     });
 
     const evidence = readSnapshotQaEvidenceFromDb(db, query);
-    expect(evidence.securityVerdict).toEqual({ malicious: 1, totalEngines: 68 });
+    expect(evidence.securityVerdict).toEqual({ malicious: 1, totalEngines: 68, coveredClean: false });
   });
 
   it('finds a passed row for the exact winget id, version, architecture and installer sha', () => {

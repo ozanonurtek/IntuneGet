@@ -26,6 +26,17 @@ function mappingStorage(): 'supabase' | 'sqlite' | null {
 }
 
 /**
+ * SQLite mode has no MSP tenant resolution, so a request may only address the
+ * signed in tenant.
+ */
+function rejectForeignTenant(request: NextRequest, tenantId: string): NextResponse | null {
+  const requestedTenant = request.headers.get('X-MSP-Tenant-Id');
+  return requestedTenant && requestedTenant !== tenantId
+    ? NextResponse.json({ error: 'Not authorized to access other tenants' }, { status: 403 })
+    : null;
+}
+
+/**
  * GET - List all manual mappings for the tenant
  */
 export async function GET(request: NextRequest) {
@@ -44,6 +55,8 @@ export async function GET(request: NextRequest) {
     }
 
     if (storage === 'sqlite') {
+      const foreignTenant = rejectForeignTenant(request, user.tenantId);
+      if (foreignTenant) return foreignTenant;
       const mappings = await getDatabase().manualAppMappings.listForTenant(user.tenantId);
       return NextResponse.json({ mappings: mappings.map(formatMapping) });
     }
@@ -121,7 +134,12 @@ export async function POST(request: NextRequest) {
 
     const body: CreateMappingRequest = await request.json();
 
-    if (!body.discoveredAppName || !body.wingetPackageId) {
+    if (
+      !body ||
+      typeof body.discoveredAppName !== 'string' || !body.discoveredAppName.trim() ||
+      typeof body.wingetPackageId !== 'string' || !body.wingetPackageId.trim() ||
+      (body.discoveredPublisher != null && typeof body.discoveredPublisher !== 'string')
+    ) {
       return NextResponse.json(
         { error: 'Missing required fields: discoveredAppName and wingetPackageId' },
         { status: 400 }
@@ -129,10 +147,12 @@ export async function POST(request: NextRequest) {
     }
 
     if (storage === 'sqlite') {
+      const foreignTenant = rejectForeignTenant(request, user.tenantId);
+      if (foreignTenant) return foreignTenant;
       const { mapping, updated } = await getDatabase().manualAppMappings.upsert({
         discovered_app_name: body.discoveredAppName,
-        discovered_publisher: body.discoveredPublisher ?? null,
-        winget_package_id: body.wingetPackageId,
+        discovered_publisher: body.discoveredPublisher || null,
+        winget_package_id: body.wingetPackageId.trim(),
         tenant_id: user.tenantId,
         created_by: user.userId,
       });
@@ -275,8 +295,12 @@ export async function DELETE(request: NextRequest) {
     }
 
     if (storage === 'sqlite') {
+      const foreignTenant = rejectForeignTenant(request, user.tenantId);
+      if (foreignTenant) return foreignTenant;
       const mapping = await getDatabase().manualAppMappings.getById(mappingId);
-      if (!mapping) {
+      // Another tenant's mapping reads as missing so its existence is not
+      // revealed; a global mapping is visible to the tenant but not deletable.
+      if (!mapping || (mapping.tenant_id !== null && mapping.tenant_id !== user.tenantId)) {
         return NextResponse.json(
           { error: 'Mapping not found' },
           { status: 404 }

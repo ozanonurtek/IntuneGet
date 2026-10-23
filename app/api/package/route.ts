@@ -46,7 +46,7 @@ import {
 } from '@/lib/installer-preflight';
 import { applyInstallerUrlOverride } from '@/lib/installer-url-overrides';
 import { ensureQaDemand } from '@/lib/qa/demand';
-import { describeQaGateError, isQaGateError } from '@/lib/qa/gate';
+import { QaGateNotPassedError, describeQaGateError, isQaGateError } from '@/lib/qa/gate';
 import { isDeferredCustomerQaEnabled } from '@/lib/qa/continuity';
 import {
   applyApplicationPackagingAdapter,
@@ -63,6 +63,7 @@ import {
   PACKAGE_UNAVAILABLE_MESSAGE,
 } from '@/lib/package-eligibility';
 import { QA_PRIORITY_CUSTOMER } from '@/lib/qa/constants';
+import { enrichCustomerQaStatus } from '@/lib/customer-qa-status';
 
 export const maxDuration = 300;
 
@@ -315,13 +316,14 @@ export async function POST(request: NextRequest) {
     }
 
     // Validate installer URLs for win32 items. Custom apps (issue #109)
-    // accept arbitrary user-provided URLs, so reject anything that is not
-    // a well-formed http(s) URL before queueing packaging jobs.
+    // require HTTPS. Preserve HTTP support for trusted catalog sources, whose
+    // manifest and hash are verified separately before dispatch.
     for (const item of win32Items) {
-      if (!isValidInstallerUrl(item.installerUrl)) {
+      const isCustom = item.sourceType === 'custom' || (typeof item.wingetId === 'string' && item.wingetId.startsWith('Custom.'));
+      if (!isValidInstallerUrl(item.installerUrl, { allowHttp: !isCustom })) {
         return NextResponse.json(
           {
-            error: `Invalid installer URL for "${item.displayName || item.wingetId}": the installer URL must be a valid http or https URL`,
+            error: `Invalid installer URL for "${item.displayName || item.wingetId}": the installer URL must be a valid ${isCustom ? 'HTTPS' : 'http or https'} URL`,
           },
           { status: 400 }
         );
@@ -898,21 +900,30 @@ export async function POST(request: NextRequest) {
             // compatibility evidence. A block there is a validation outcome
             // with its own reason, not a failure to start the workflow.
             const qaGateError = isQaGateError(result.reason) ? result.reason : null;
+            const reputationHold = qaGateError instanceof QaGateNotPassedError && qaGateError.details.reason === 'reputation';
             const dispatchError = qaGateError
               ? describeQaGateError(qaGateError)
               : result.reason instanceof Error ? result.reason.message : 'Unknown error';
             if (dispatch) {
               await db.jobs.update(dispatch.jobId, {
-                status: 'failed',
+                status: reputationHold ? 'awaiting_qa' : 'failed',
+                status_message: reputationHold ? dispatchError : null,
                 progress_percent: 0,
                 error_stage: qaGateError ? 'validation' : 'authenticate',
                 error_category: qaGateError ? null : 'network',
                 error_code: qaGateError ? qaGateError.code : 'WORKFLOW_DISPATCH_FAILED',
                 error_message: dispatchError,
-                completed_at: new Date().toISOString(),
+                completed_at: reputationHold ? null : new Date().toISOString(),
               }).catch((updateError) => {
                 console.error(`Failed to mark dispatch ${dispatch.jobId} as failed:`, updateError);
               });
+            }
+            if (reputationHold && dispatch) {
+              jobs.push({ id: dispatch.jobId, user_id: userId, tenant_id: tenantId,
+                winget_id: dispatch.item.wingetId, version: dispatch.item.version,
+                display_name: dispatch.item.displayName, publisher: dispatch.item.publisher,
+                status: 'awaiting_qa', package_config: dispatch.item, created_at: dispatch.createdAt });
+              continue;
             }
             errors.push({
               wingetId: dispatch?.item.wingetId || 'unknown',
@@ -1059,7 +1070,8 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      return NextResponse.json({ job });
+      const [displayJob] = await enrichCustomerQaStatus([job]);
+      return NextResponse.json({ job: displayJob });
     }
 
     // List the signed-in user's jobs. Use the token's userId (the same value
@@ -1091,7 +1103,7 @@ export async function GET(request: NextRequest) {
       }
 
       const tenantJobs = await db.jobs.getByTenantId(tenantId, 50);
-      return NextResponse.json({ jobs: tenantJobs, scope: 'tenant' });
+      return NextResponse.json({ jobs: await enrichCustomerQaStatus(tenantJobs), scope: 'tenant' });
     }
 
     const jobs = await db.jobs.getByUserId(user.userId, 50);
@@ -1100,7 +1112,7 @@ export async function GET(request: NextRequest) {
     // deployments where the cleanup cron is not running)
     const healedJobs = await healStaleJobs(db, jobs);
 
-    return NextResponse.json({ jobs: healedJobs });
+    return NextResponse.json({ jobs: await enrichCustomerQaStatus(healedJobs) });
   } catch (err) {
     console.error('[Package] Failed to fetch jobs:', err);
     const detail = !isSupabaseServerConfigured() && err instanceof Error ? err.message : null;

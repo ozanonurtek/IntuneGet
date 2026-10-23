@@ -125,6 +125,7 @@ interface PackageAssignment {
   filterType?: 'include' | 'exclude';
   notifications?: 'showAll' | 'showReboot' | 'hideAll';
   deliveryOptimizationPriority?: 'notConfigured' | 'foreground';
+  autoUpdateSupersededApps?: boolean;
 }
 
 interface IntuneAppCategorySelection {
@@ -155,6 +156,10 @@ interface GraphMobileAppAssignment {
     '@odata.type': '#microsoft.graph.win32LobAppAssignmentSettings';
     notifications: 'showAll' | 'showReboot' | 'hideAll';
     deliveryOptimizationPriority: 'notConfigured' | 'foreground';
+    autoUpdateSettings?: {
+      '@odata.type': '#microsoft.graph.win32LobAppAutoUpdateSettings';
+      autoUpdateSupersededAppsState: 'enabled';
+    };
   };
 }
 
@@ -402,7 +407,7 @@ export class IntuneUploader {
     }
 
     try {
-      const fetch = (await import('node-fetch')).default;
+      const fetch = this.config.proxy?.fetch.bind(this.config.proxy) ?? (await import('node-fetch')).default;
       const response = await fetch(iconUrl);
 
       if (!response.ok) {
@@ -531,7 +536,7 @@ export class IntuneUploader {
     azureStorageUri: string,
     onProgress?: (percent: number) => Promise<void>
   ): Promise<void> {
-    const fetch = (await import('node-fetch')).default;
+    const fetch = this.config.proxy?.fetch.bind(this.config.proxy) ?? (await import('node-fetch')).default;
     const fileHandle = await fs.promises.open(filePath, 'r');
     const stats = await fileHandle.stat();
     const fileSize = stats.size;
@@ -988,6 +993,7 @@ export class IntuneUploader {
             || assignment.deliveryOptimizationPriority === 'foreground'
             ? assignment.deliveryOptimizationPriority
             : undefined,
+          autoUpdateSupersededApps: assignment.autoUpdateSupersededApps === true ? true : undefined,
         }));
     }
 
@@ -1099,6 +1105,12 @@ export class IntuneUploader {
           '@odata.type': '#microsoft.graph.win32LobAppAssignmentSettings',
           notifications: assignment.notifications ?? 'showAll',
           deliveryOptimizationPriority: assignment.deliveryOptimizationPriority ?? 'notConfigured',
+          ...(assignment.intent === 'available' && assignment.autoUpdateSupersededApps === true ? {
+            autoUpdateSettings: {
+              '@odata.type': '#microsoft.graph.win32LobAppAutoUpdateSettings' as const,
+              autoUpdateSupersededAppsState: 'enabled' as const,
+            },
+          } : {}),
         };
       }
 

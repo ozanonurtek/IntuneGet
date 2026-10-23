@@ -18,7 +18,7 @@ import { catalogEntries, compareReleaseVersions, sha256, canonicalJson, signCata
 import { discoverCandidate, discoverPreviousCandidate } from '../lib/curated-catalog/discovery.mjs';
 import { curatedMonitor } from '../lib/curated-catalog/monitor.mjs';
 import { createCuratedGitHubClient } from './curated-github.mjs';
-import { prepareCuratedPublication } from './curated-publication.mjs';
+import { createCuratedGitRunner, prepareCuratedPublication } from './curated-publication.mjs';
 import { enqueueCuratedVerification, processConfigVerifications, supabaseConfigured, syncHistory } from './curated-qa-store.mjs';
 
 const WEBSITE = 'ugurkocde/IntuneGet';
@@ -297,8 +297,10 @@ async function plan() {
       alerts.push(`${app.name} ${candidate.version}: no earlier official installer is available, and this app requires a tested upgrade.`);
       continue;
     }
-    await dispatchVerification({ app_label: `${app.name} ${candidate.version} ${app.architecture} [${candidate.id}]`, candidate: JSON.stringify(candidate), previous: previous ? JSON.stringify(previous) : '' });
-    row.state = previous ? `Priority verification queued (upgrade from ${previous.version})` : 'Priority verification queued (vendor-managed, no upgrade test)';
+    const dispatchResult = await dispatchVerification({ app_label: `${app.name} ${candidate.version} ${app.architecture} [${candidate.id}]`, candidate: JSON.stringify(candidate), previous: previous ? JSON.stringify(previous) : '' });
+    row.state = dispatchResult?.held ? 'Held: reviewed QA repair required'
+      : dispatchResult?.existing ? 'Verification already queued or active'
+      : previous ? `Priority verification queued (upgrade from ${previous.version})` : 'Priority verification queued (vendor-managed, no upgrade test)';
   }
 
   // Decide whether the catalog must be signed again.
@@ -390,21 +392,16 @@ async function publish() {
     '', 'CI validates the signature and definitions. Publication requires independent final patch review of the exact revision.',
   ].filter((line, index, all) => line !== '' || (index > 0 && all[index - 1] !== '')).join('\n');
 
-  const git = (...args) => {
-    const result = spawnSync('git', args, { encoding: 'utf8' });
-    if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${(result.stderr || '').split('\n')[0]}`);
-    return result.stdout.trim();
-  };
+  const git = createCuratedGitRunner();
   const user = await gh(['api', 'user']);
   git('config', 'user.name', user.login);
   git('config', 'user.email', `${user.id}+${user.login}@users.noreply.github.com`);
   git('checkout', '-B', BRANCH);
   git('add', CATALOG_PATH, ...evidenceFiles.map(([path]) => path));
   git('commit', '-m', `${title}\n\n${details}`);
-  const basic = Buffer.from(`x-access-token:${process.env.GH_TOKEN}`).toString('base64');
   const headSha = git('rev-parse', 'HEAD');
   const pr = await prepareCuratedPublication({ gh, repo: WEBSITE, branch: BRANCH, title, details, headSha,
-    push: () => git('-c', `http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic}`, 'push', '--force', `https://github.com/${WEBSITE}.git`, `HEAD:refs/heads/${BRANCH}`) });
+    push: () => git('push', '--force', `https://github.com/${WEBSITE}.git`, `HEAD:refs/heads/${BRANCH}`) });
   const publication = { ...pr, kind: withdraw ? 'withdraw' : added.length ? 'publish' : 'renew', expiresAt: payload.expiresAt, reviewRequired: true };
   await writeFile(resolve(root, 'publication.json'), `${JSON.stringify(publication, null, 2)}\n`);
   await appendSummary(`Prepared ${title} as ${pr.url}.\n\nHead: \`${headSha}\`. Kind: ${publication.kind}. Expires: ${publication.expiresAt}.\n\nAwaiting independent final patch review and a merge guarded by this exact SHA in the QA owner thread.`);

@@ -114,6 +114,12 @@ function insertQaRow(
   } as Record<string, unknown>);
 }
 
+function insertCleanReputation(db: Database.Database, sha256 = installerSha256) {
+  db.prepare(
+    'INSERT INTO catalog_file_reputation (sha256, status, malicious, suspicious, total_engines, analyzed_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(sha256.toLowerCase(), 'found', 0, 0, 72, '2026-10-01T00:00:00Z');
+}
+
 const gateInput = {
   wingetId: 'Vendor.App',
   version: '2.0.0',
@@ -141,6 +147,7 @@ describe('enforceQaGate in SQLite self-host mode', () => {
   });
 
   it('never calls createServerClient for a non-curated winget package', async () => {
+    insertCleanReputation(db);
     await expect(enforceQaGate(gateInput)).resolves.toBeUndefined();
     expect(createServerClientMock).not.toHaveBeenCalled();
   });
@@ -169,13 +176,24 @@ describe('enforceQaGate in SQLite self-host mode', () => {
 
   it('returns for a passed snapshot row without Supabase', async () => {
     insertQaRow(db, { installer_sha256: installerSha256 });
+    insertCleanReputation(db);
 
     await expect(enforceQaGate({ ...gateInput, requirePassed: true })).resolves.toBeUndefined();
     expect(createServerClientMock).not.toHaveBeenCalled();
     expect(getQaResultMock).not.toHaveBeenCalled();
   });
 
+  it('holds packaging without a covered clean snapshot verdict', async () => {
+    insertQaRow(db, { installer_sha256: installerSha256 });
+
+    await expect(enforceQaGate({ ...gateInput, qaOverride: true })).rejects.toMatchObject({
+      details: { reason: 'reputation' },
+    });
+    expect(createServerClientMock).not.toHaveBeenCalled();
+  });
+
   it('throws QaGateNotPassedError when requirePassed is set and no row exists', async () => {
+    insertCleanReputation(db);
     await expect(enforceQaGate({ ...gateInput, requirePassed: true })).rejects.toBeInstanceOf(
       QaGateNotPassedError
     );
@@ -189,11 +207,11 @@ describe('enforceQaGate in SQLite self-host mode', () => {
     expect(createServerClientMock).not.toHaveBeenCalled();
   });
 
-  it('does not crash a plain deploy when the snapshot is unavailable', async () => {
+  it('holds a plain deploy without crashing when the snapshot is unavailable', async () => {
     const { SnapshotUnavailableError } = await import('@/lib/catalog/snapshot-store');
     getSnapshotDbMock.mockRejectedValue(new SnapshotUnavailableError('offline'));
 
-    await expect(enforceQaGate(gateInput)).resolves.toBeUndefined();
+    await expect(enforceQaGate(gateInput)).rejects.toMatchObject({ details: { reason: 'reputation' } });
     expect(console.warn).toHaveBeenCalledTimes(1);
     expect(createServerClientMock).not.toHaveBeenCalled();
   });
@@ -210,6 +228,7 @@ describe('enforceQaGate in SQLite self-host mode', () => {
 
   it('falls back to the catalog QA result for an unknown installer sha', async () => {
     getQaResultMock.mockResolvedValue(null);
+    insertCleanReputation(db, 'C'.repeat(64));
 
     await expect(
       enforceQaGate({ ...gateInput, installerSha256: 'C'.repeat(64) })

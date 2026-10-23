@@ -329,6 +329,10 @@ export async function GET(request: NextRequest) {
       // cache (the service-principal token acquired next proves consent) and no
       // discovered-apps cache, so this always runs a live, cache-less scan.
       tenantId = user.tenantId;
+      const requestedTenant = request.headers.get('X-MSP-Tenant-Id');
+      if (isSqliteMode() && requestedTenant && requestedTenant !== tenantId) {
+        return NextResponse.json({ error: 'Not authorized to access other tenants' }, { status: 403 });
+      }
     }
 
     // Fetch fresh data from Graph API

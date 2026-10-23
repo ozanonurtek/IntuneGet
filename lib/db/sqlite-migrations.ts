@@ -328,6 +328,37 @@ export const MIGRATIONS: SqliteMigration[] = [
       `);
     },
   },
+  // Versions 9-11 are upstream's 6-8, renumbered after this fork's 6-8 that
+  // existing self-hosted databases have already applied.
+  {
+    version: 9,
+    name: 'saved custom app definitions',
+    up: db => {
+      db.exec(`CREATE TABLE IF NOT EXISTS custom_app_definitions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        definition TEXT NOT NULL CHECK (json_valid(definition) AND json_type(definition) = 'object' AND length(CAST(definition AS BLOB)) <= 16384),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_custom_app_definitions_owner ON custom_app_definitions(user_id, tenant_id, updated_at DESC, id DESC);`);
+    },
+  },
+  {
+    // Version 6 already created manual_app_mappings with compatible columns;
+    // this keeps upstream's numbering slot without changing the table.
+    version: 10,
+    name: 'local manual application mappings',
+    up: () => {},
+  },
+  {
+    version: 11,
+    name: 'automatic update scope',
+    up: db => {
+      db.exec("ALTER TABLE app_update_policies ADD COLUMN auto_update_scope TEXT NOT NULL DEFAULT 'all' CHECK (auto_update_scope IN ('all', 'minor', 'major'));");
+    },
+  },
 ];
 
 export function getSqliteSchemaVersion(db: BetterSqlite3.Database): number {

@@ -186,15 +186,17 @@ Optional catalog snapshot overrides (sensible defaults, normally unset):
 > The packaging QA gate is also served from the snapshot in SQLite mode:
 > malicious VirusTotal verdicts (`catalog_file_reputation`, with the
 > `qa_results` VirusTotal columns as the legacy fallback) and passed
-> installation-test rows are read from the same downloaded file, and an
-> unavailable snapshot degrades exactly like a missing Supabase row instead of
-> failing the deploy.
+> installation-test rows are read from the same downloaded file. As in hosted
+> mode, catalog packaging needs a clean VirusTotal verdict with engine coverage
+> for the exact installer, so an installer the snapshot has no clean verdict
+> for (or an unavailable snapshot) holds packaging until a newer snapshot
+> carries one.
 >
 > Note: app update policies and their auto-update history are stored locally in
-> SQLite, and so are discovered app claims and manual app mappings. Other
-> Supabase-backed surfaces (dashboard history, notifications, automatic update
-> triggering, and MSP features) still require Supabase; the catalog and update
-> policies run Supabase-less.
+> SQLite, and so are discovered app claims, manual package links and webhook
+> configurations. Other Supabase-backed surfaces (dashboard history,
+> notifications, automatic update triggering, and MSP features) still require
+> Supabase; the catalog and update policies run Supabase-less.
 
 ### Notification Configuration
 
@@ -559,3 +561,7 @@ docker-compose up -d
 
 - GitHub Issues: [github.com/ugurkocde/IntuneGet/issues](https://github.com/ugurkocde/IntuneGet/issues)
 - Documentation: [github.com/ugurkocde/IntuneGet/docs](https://github.com/ugurkocde/IntuneGet/tree/main/docs)
+
+## Saved custom apps
+
+SQLite installations can save reusable custom app definitions and use **Deploy new version** in the custom app form. Definitions stay in the configured SQLite database and are scoped to the signed in account and tenant. New versions still require a fresh installer URL, version and optional hash. See [Custom apps](CUSTOM_APPS.md).

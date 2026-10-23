@@ -117,7 +117,7 @@ describe('manual app mappings with the SQLite adapter', () => {
     expect(names).not.toContain('other app');
   });
 
-  it('deletes the tenant mapping and refuses another tenant\'s', async () => {
+  it('deletes the tenant mapping and hides another tenant\'s', async () => {
     state.tenant = 'other-fixture-tenant';
     const { mapping: foreign } = await (await POST(request('POST', mappingBody('Foreign App')))).json();
     state.tenant = 'fixture-tenant';
@@ -127,9 +127,9 @@ describe('manual app mappings with the SQLite adapter', () => {
     expect(missing.status).toBe(404);
     expect(await missing.json()).toEqual({ error: 'Mapping not found' });
 
-    const forbidden = await DELETE(deleteRequest(foreign.id));
-    expect(forbidden.status).toBe(403);
-    expect(await forbidden.json()).toEqual({ error: 'Unauthorized to delete this mapping' });
+    const hidden = await DELETE(deleteRequest(foreign.id));
+    expect(hidden.status).toBe(404);
+    expect(await hidden.json()).toEqual({ error: 'Mapping not found' });
     expect((await sqliteDb.manualAppMappings.getById(foreign.id))?.id).toBe(foreign.id);
 
     expect(await (await DELETE(deleteRequest(own.id))).json()).toEqual({ success: true });
