@@ -180,7 +180,8 @@ export function describeQaGateError(error: AnyQaGateError): string {
 /**
  * SQLite self-host has no QA pipeline of its own and only sees upstream's
  * published snapshot, so its reputation and installation-test gates are off
- * by default: jobs package as soon as they are requested. Set
+ * by default: jobs package as soon as they are requested. Only an installer
+ * the snapshot marks malicious is still refused. Set
  * SELFHOST_QA_GATE=enforce to restore the snapshot-backed gate. Hosted
  * (Supabase) deployments are never affected.
  */
@@ -236,7 +237,27 @@ export async function enforceQaGate(input: {
     return;
   }
   if (input.sourceType === 'custom') return;
-  if (isSelfHostQaGateBypassed()) return;
+  if (isSelfHostQaGateBypassed()) {
+    // Bypass skips every hold, but a known-malicious installer is still
+    // refused. Fail-open: no snapshot or no verdict lets the job through.
+    const sha = input.installerSha256?.trim() || '';
+    if (!sha) return;
+    const architecture = (input.architecture || 'x64').toLowerCase();
+    const evidence = await readSnapshotQaEvidence({
+      wingetId: input.wingetId, version: input.version, architecture, installerSha256: sha,
+    });
+    const verdict = evidence.securityVerdict;
+    if (verdict && verdict.malicious >= 1) {
+      throw new QaSecurityGateError({
+        wingetId: input.wingetId,
+        version: input.version,
+        architecture,
+        malicious: verdict.malicious,
+        totalEngines: verdict.totalEngines,
+      });
+    }
+    return;
+  }
 
   const architecture = (input.architecture || 'x64').toLowerCase();
   const installerSha256 = input.installerSha256?.trim().toUpperCase() || '';

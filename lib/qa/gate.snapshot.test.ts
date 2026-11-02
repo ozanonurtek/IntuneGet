@@ -267,8 +267,30 @@ describe('enforceQaGate in SQLite self-host mode with SELFHOST_QA_GATE=enforce',
     try {
       // No reputation row, no passed row, strict automatic QA: still admitted.
       await expect(enforceQaGate({ ...gateInput, requirePassed: true })).resolves.toBeUndefined();
-      expect(getSnapshotDbMock).not.toHaveBeenCalled();
       expect(createServerClientMock).not.toHaveBeenCalled();
+    } finally {
+      vi.stubEnv('SELFHOST_QA_GATE', 'enforce');
+    }
+  });
+
+  it('still refuses a malicious installer when the gate is bypassed', async () => {
+    vi.stubEnv('SELFHOST_QA_GATE', '');
+    try {
+      db.prepare(
+        'INSERT INTO catalog_file_reputation (sha256, status, malicious, suspicious, total_engines, analyzed_at) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run(installerSha256.toLowerCase(), 'found', 3, 0, null, '2026-10-01T00:00:00Z');
+      await expect(enforceQaGate(gateInput)).rejects.toBeInstanceOf(QaSecurityGateError);
+    } finally {
+      vi.stubEnv('SELFHOST_QA_GATE', 'enforce');
+    }
+  });
+
+  it('lets a bypassed job through when the snapshot is unavailable', async () => {
+    vi.stubEnv('SELFHOST_QA_GATE', '');
+    try {
+      const { SnapshotUnavailableError } = await import('@/lib/catalog/snapshot-store');
+      getSnapshotDbMock.mockRejectedValue(new SnapshotUnavailableError('offline'));
+      await expect(enforceQaGate(gateInput)).resolves.toBeUndefined();
     } finally {
       vi.stubEnv('SELFHOST_QA_GATE', 'enforce');
     }
