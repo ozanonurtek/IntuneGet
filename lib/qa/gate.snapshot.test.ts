@@ -9,6 +9,7 @@ const { createServerClientMock, getSnapshotDbMock, getQaResultMock, resolveDepen
   vi.stubEnv('DATABASE_MODE', 'sqlite');
   vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', '');
   vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', '');
+  vi.stubEnv('SELFHOST_QA_GATE', 'enforce');
   return {
     createServerClientMock: vi.fn(),
     getSnapshotDbMock: vi.fn(),
@@ -133,7 +134,7 @@ const gateInput = {
   packageProfileSha256: 'B'.repeat(64),
 };
 
-describe('enforceQaGate in SQLite self-host mode', () => {
+describe('enforceQaGate in SQLite self-host mode with SELFHOST_QA_GATE=enforce', () => {
   let db: Database.Database;
 
   beforeEach(() => {
@@ -259,5 +260,17 @@ describe('enforceQaGate in SQLite self-host mode', () => {
 
     await expect(enforceQaGate(gateInput)).rejects.toMatchObject({ details: { reason: 'reputation' } });
     expect(createServerClientMock).not.toHaveBeenCalled();
+  });
+
+  it('bypasses every QA and reputation check when SELFHOST_QA_GATE is unset', async () => {
+    vi.stubEnv('SELFHOST_QA_GATE', '');
+    try {
+      // No reputation row, no passed row, strict automatic QA: still admitted.
+      await expect(enforceQaGate({ ...gateInput, requirePassed: true })).resolves.toBeUndefined();
+      expect(getSnapshotDbMock).not.toHaveBeenCalled();
+      expect(createServerClientMock).not.toHaveBeenCalled();
+    } finally {
+      vi.stubEnv('SELFHOST_QA_GATE', 'enforce');
+    }
   });
 });

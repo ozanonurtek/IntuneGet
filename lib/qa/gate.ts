@@ -177,6 +177,18 @@ export function describeQaGateError(error: AnyQaGateError): string {
   ].join(' ');
 }
 
+/**
+ * SQLite self-host has no QA pipeline of its own and only sees upstream's
+ * published snapshot, so its reputation and installation-test gates are off
+ * by default: jobs package as soon as they are requested. Set
+ * SELFHOST_QA_GATE=enforce to restore the snapshot-backed gate. Hosted
+ * (Supabase) deployments are never affected.
+ */
+export function isSelfHostQaGateBypassed(): boolean {
+  return !isSupabaseServerConfigured() && isSqliteMode() &&
+    process.env.SELFHOST_QA_GATE?.trim().toLowerCase() !== 'enforce';
+}
+
 export async function enforceQaGate(input: {
   wingetId: string;
   version: string;
@@ -224,6 +236,7 @@ export async function enforceQaGate(input: {
     return;
   }
   if (input.sourceType === 'custom') return;
+  if (isSelfHostQaGateBypassed()) return;
 
   const architecture = (input.architecture || 'x64').toLowerCase();
   const installerSha256 = input.installerSha256?.trim().toUpperCase() || '';

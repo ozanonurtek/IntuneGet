@@ -40,6 +40,7 @@ import type {
   AutoUpdateStatus,
 } from '@/types/update-policies';
 import { runSqliteMigrations } from './sqlite-migrations';
+import { runSelfHostOnceTasks } from './sqlite-selfhost-once';
 import { INTUNE_APPROVAL_CHECKPOINT_STATUSES } from '@/lib/intune-approval';
 
 // Singleton database instance
@@ -70,6 +71,7 @@ function getDb(): Database.Database {
   // Apply versioned migrations (baseline, then additive changes)
   try {
     runSqliteMigrations(db);
+    for (const task of runSelfHostOnceTasks(db)) console.log(`[sqlite] applied one-time task ${task}`);
 
     // Repair history left pending by older local packagers, once per connection.
     const database = db;
