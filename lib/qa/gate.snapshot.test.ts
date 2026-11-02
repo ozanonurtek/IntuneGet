@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 // Module-level env is captured at import time by lib/supabase, so the SQLite
 // self-host environment must be stubbed before the modules under test load
 // (the same pattern as app/api/intune/claim/route.sqlite.test.ts).
-const { createServerClientMock, getSnapshotDbMock, getQaResultMock } = vi.hoisted(() => {
+const { createServerClientMock, getSnapshotDbMock, getQaResultMock, resolveDependenciesMock } = vi.hoisted(() => {
   vi.stubEnv('DATABASE_PATH', ':memory:');
   vi.stubEnv('DATABASE_MODE', 'sqlite');
   vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', '');
@@ -13,8 +13,13 @@ const { createServerClientMock, getSnapshotDbMock, getQaResultMock } = vi.hoiste
     createServerClientMock: vi.fn(),
     getSnapshotDbMock: vi.fn(),
     getQaResultMock: vi.fn(),
+    resolveDependenciesMock: vi.fn(),
   };
 });
+vi.mock('@/lib/winget-dependencies', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/winget-dependencies')>(),
+  resolveWingetPackageDependencies: resolveDependenciesMock,
+}));
 vi.mock('@/lib/supabase', async () => {
   const actual = await vi.importActual<typeof import('@/lib/supabase')>('@/lib/supabase');
   return { ...actual, createServerClient: createServerClientMock };
@@ -138,6 +143,8 @@ describe('enforceQaGate in SQLite self-host mode', () => {
     getQaResultMock.mockReset();
     getQaResultMock.mockResolvedValue(null);
     createServerClientMock.mockReset();
+    resolveDependenciesMock.mockReset();
+    resolveDependenciesMock.mockResolvedValue([]);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
@@ -234,6 +241,23 @@ describe('enforceQaGate in SQLite self-host mode', () => {
       enforceQaGate({ ...gateInput, installerSha256: 'C'.repeat(64) })
     ).resolves.toBeUndefined();
     expect(getQaResultMock).toHaveBeenCalledWith('Vendor.App');
+    expect(createServerClientMock).not.toHaveBeenCalled();
+  });
+
+  it('admits a dependency bundle with covered clean snapshot reputation', async () => {
+    insertCleanReputation(db);
+    insertCleanReputation(db, 'D'.repeat(64));
+    resolveDependenciesMock.mockResolvedValue([{ installerSha256: 'D'.repeat(64) }]);
+
+    await expect(enforceQaGate(gateInput)).resolves.toBeUndefined();
+    expect(createServerClientMock).not.toHaveBeenCalled();
+  });
+
+  it('holds a dependency bundle without snapshot reputation for the dependency', async () => {
+    insertCleanReputation(db);
+    resolveDependenciesMock.mockResolvedValue([{ installerSha256: 'D'.repeat(64) }]);
+
+    await expect(enforceQaGate(gateInput)).rejects.toMatchObject({ details: { reason: 'reputation' } });
     expect(createServerClientMock).not.toHaveBeenCalled();
   });
 });

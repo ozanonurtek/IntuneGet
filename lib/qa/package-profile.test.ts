@@ -35,6 +35,24 @@ const input = {
 };
 
 describe('PSADT QA package identity', () => {
+  it('gives the UDS capture repair a new profile while preserving detection and installer identity', () => {
+    const uds = {
+      ...input, wingetId: 'VirtualCable.UDSClient', displayName: 'UDS Enterprise Client',
+      publisher: 'VirtualCable', version: '3.6.0.18670', architecture: 'x86',
+      sourceInstallerType: 'nullsoft', silentArgs: '/S',
+      uninstallCommand: 'REGISTRY_UNINSTALL:UDS Enterprise Client',
+    };
+    const previous = buildQaPackageIdentity(uds);
+    const repaired = buildQaPackageIdentity({
+      ...uds, psadtConfig: applyApplicationPackagingAdapter(uds.wingetId, uds.psadtConfig),
+    });
+    expect(repaired.profile.psadtConfig.reviewedRegistryUninstallDisplayName).toBe('UDS Client');
+    expect(repaired.psadtConfigSha256).not.toBe(previous.psadtConfigSha256);
+    expect(repaired.packageProfileSha256).not.toBe(previous.packageProfileSha256);
+    expect(repaired.detectionRulesSha256).toBe(previous.detectionRulesSha256);
+    expect(repaired.profile.installer).toEqual(previous.profile.installer);
+  });
+
   it('preserves the exact failed Wacom driver identity for the shared registered-command adapter', () => {
     const normalized = normalizeQaWorkflowPackageInput({
       wingetId: 'Wacom.WacomTabletDriver', displayName: 'Wacom Tablet', publisher: 'Wacom',
@@ -1040,6 +1058,66 @@ describe('PSADT QA package identity', () => {
     ]);
   });
 
+  it('keeps UniClipboard out of LocalSystem when WinGet omits its scope', () => {
+    const normalized = normalizeQaWorkflowPackageInput({
+      wingetId: 'UniClipboard.UniClipboard',
+      displayName: 'UniClipboard',
+      publisher: 'UniClipboard',
+      version: '1.5.0',
+      architecture: 'x64',
+      installerSha256: 'd'.repeat(64),
+      installerType: 'nullsoft',
+      silentSwitches: '/S',
+      uninstallCommand: 'REGISTRY_UNINSTALL:UniClipboard',
+      installScope: 'machine',
+      detectionRules: '[]',
+      psadtConfig: JSON.stringify({ detectionRules: [] }),
+    });
+    const profile = normalized.identity.profile as {
+      installer: { installScope: string };
+    };
+
+    expect(profile.installer.installScope).toBe('user');
+    expect(normalized.detectionRules).toEqual([
+      expect.objectContaining({
+        keyPath:
+          'HKEY_CURRENT_USER\\SOFTWARE\\IntuneGet\\Apps\\UniClipboard_UniClipboard',
+      }),
+    ]);
+  });
+
+  it('keeps Orca out of LocalSystem when WinGet omits its scope', () => {
+    const normalized = normalizeQaWorkflowPackageInput({
+      wingetId: 'StablyAI.Orca',
+      displayName: 'Orca',
+      publisher: 'StablyAI',
+      version: '1.4.242',
+      architecture: 'x64',
+      installerSha256: '9D3E8639CAACB61C3AF2510A39069016E1A744D7425A146186A050E5978224EF',
+      installerType: 'nullsoft',
+      silentSwitches: '/S',
+      uninstallCommand: 'REGISTRY_UNINSTALL_PRODUCT:{2B325EC9-0ED1-575F-AD70-E08307AEE879}:Orca',
+      installScope: 'machine',
+      detectionRules: '[]',
+      psadtConfig: JSON.stringify({ detectionRules: [] }),
+    });
+    const profile = normalized.identity.profile as {
+      installer: { installScope: string; silentArgs: string; uninstallCommand: string };
+    };
+
+    expect(profile.installer.installScope).toBe('user');
+    expect(profile.installer.silentArgs).toBe('/S');
+    expect(profile.installer.uninstallCommand).toBe(
+      'REGISTRY_UNINSTALL_PRODUCT:{2B325EC9-0ED1-575F-AD70-E08307AEE879}:Orca'
+    );
+    expect(normalized.detectionRules).toEqual([
+      expect.objectContaining({
+        keyPath:
+          'HKEY_CURRENT_USER\\SOFTWARE\\IntuneGet\\Apps\\StablyAI_Orca',
+      }),
+    ]);
+  });
+
   it('keeps Android Apps Manager out of LocalSystem when WinGet omits its scope', () => {
     const normalized = normalizeQaWorkflowPackageInput({
       wingetId: 'SIMSDEV.AndroidAppsManager',
@@ -1734,6 +1812,27 @@ describe('PSADT QA package identity', () => {
     expect(normalized.identity.profile.installer).toMatchObject({
       installScope: 'user', silentArgs: '/S', uninstallCommand, sha256: installerSha256,
     });
+  });
+
+  it('normalizes T3 Code to one user profile while preserving installer and removal identity', () => {
+    const installerSha256 = '8CFF5C90FDC976C0BDEF86074A8CDE9C3784AF8DE2091759514CD9F8F1457405';
+    const uninstallCommand = 'REGISTRY_UNINSTALL_PRODUCT:{E9197887-EFB3-55E0-985E-D6D3B5DD594A}:T3 Code';
+    const input = {
+      wingetId: 'T3Tools.T3Code', displayName: 'T3 Code', publisher: 'T3Tools',
+      version: '0.1.6', architecture: 'x64', installerSha256,
+      installerType: 'nullsoft', silentSwitches: '/S', uninstallCommand,
+      detectionRules: '[]', psadtConfig: JSON.stringify({ detectionRules: [] }),
+    };
+    const machine = normalizeQaWorkflowPackageInput({ ...input, installScope: 'machine' });
+    const user = normalizeQaWorkflowPackageInput({ ...input, installScope: 'user' });
+    expect(machine.identity.profile.installer).toMatchObject({
+      installScope: 'user', sourceType: 'nullsoft', silentArgs: '/S',
+      uninstallCommand, sha256: installerSha256,
+    });
+    expect(machine.identity.executionProfileSha256).toBe(user.identity.executionProfileSha256);
+    expect(normalizeQaWorkflowPackageInput({
+      ...input, wingetId: 'T3Tools.Other', installScope: 'machine',
+    }).identity.profile.installer.installScope).toBe('machine');
   });
 
   it('uses Negative Encoder user context while preserving the machine-labelled installer bytes and removal identity', () => {

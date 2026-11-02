@@ -175,3 +175,39 @@ export async function readSnapshotQaEvidence(
   }
   return readSnapshotQaEvidenceFromDb(db, query);
 }
+
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+
+/**
+ * SQLite-mode counterpart of arePackageDependenciesCovered: every dependency
+ * installer must have a covered clean verdict in the snapshot. The snapshot
+ * carries no freshness columns (checked_at, retry_after, engine_count_version)
+ * and no installer security holds, so this is the snapshot's best available
+ * evidence, not the hosted seven-day contract. Fails closed on bad input.
+ */
+export function snapshotDependenciesCoveredFromDb(
+  db: DB,
+  dependencies: readonly { installerSha256: string }[]
+): boolean {
+  if (!dependencies.length) return true;
+  if (dependencies.length > 8) return false;
+  const hashes = dependencies.map(dependency => dependency.installerSha256.trim().toLowerCase());
+  if (hashes.some(hash => !SHA256_HEX.test(hash) || hash === '0'.repeat(64))) return false;
+  return [...new Set(hashes)].every(hash => snapshotSecurityVerdictFromDb(db, hash)?.coveredClean === true);
+}
+
+/** Resolve the shared snapshot handle; an unavailable snapshot fails closed. */
+export async function readSnapshotDependenciesCovered(
+  dependencies: readonly { installerSha256: string }[]
+): Promise<boolean> {
+  if (!dependencies.length) return true;
+  const { getSnapshotDb, SnapshotUnavailableError } = await import(
+    '@/lib/catalog/snapshot-store'
+  );
+  try {
+    return snapshotDependenciesCoveredFromDb(await getSnapshotDb(), dependencies);
+  } catch (err) {
+    if (err instanceof SnapshotUnavailableError) return false;
+    throw err;
+  }
+}
