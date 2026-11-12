@@ -166,6 +166,22 @@ function makeTrigger(supabaseMock: ReturnType<typeof createSupabaseMock>): AutoU
 }
 
 describe('AutoUpdateTrigger psadtConfig handling', () => {
+  it.each([true, false])('routes passed cron work through QA resume while preserving the manual default: %s', async admitViaQaResume => {
+    const insert = vi.fn();
+    const trigger = makeTrigger(createSupabaseMock({
+      packaging_jobs: { insertSpy: insert, singleResult: { data: { id: 'synthetic-job' }, error: null } },
+    }));
+    await trigger['createPackagingJob'](makePolicy({ displayName: 'Synthetic App', architecture: 'x64' }), UPDATE_INFO, 'synthetic-history', {
+      state: 'passed', candidateId: null,
+      identity: { executionProfileSha256: 'A'.repeat(64), presentationProfileSha256: 'B'.repeat(64) },
+    }, admitViaQaResume);
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({
+      status: admitViaQaResume ? 'awaiting_qa' : 'queued',
+      status_message: 'Installation test passed; preparing deployment',
+      execution_profile_sha256: 'A'.repeat(64), is_auto_update: true,
+    }));
+    expect(insert.mock.calls[0][0].qa_completed_at).not.toBeNull();
+  });
   it('holds fixed rules before any database, QA or rate limit work, including manual bypass options', async () => {
     const supabase = createSupabaseMock({});
     const config = zoomConfigForTrigger();
@@ -322,6 +338,40 @@ describe('AutoUpdateTrigger psadtConfig handling', () => {
         keyPath: 'HKEY_CURRENT_USER\\SOFTWARE\\IntuneGet\\Apps\\Vivaldi_Vivaldi',
       })],
     });
+  });
+
+  it('does not inherit another installer family silent switch for a machine MSI', async () => {
+    getAppForInstallerMock.mockResolvedValue({ latest_version: '1.0', name: 'Mixed Installer' });
+    getVersionInstallerInfoMock.mockResolvedValue({
+      installer_url: 'https://example.invalid/setup.exe',
+      installer_sha256: 'A'.repeat(64),
+      installer_type: 'nullsoft',
+      silent_args: '/S',
+      installers: [
+        {
+          Architecture: 'x64',
+          InstallerType: 'nullsoft',
+          InstallerUrl: 'https://example.invalid/setup.exe',
+          InstallerSha256: 'A'.repeat(64),
+        },
+        {
+          Architecture: 'x64',
+          InstallerType: 'wix',
+          Scope: 'machine',
+          InstallerUrl: 'https://example.invalid/setup.msi',
+          InstallerSha256: 'B'.repeat(64),
+          InstallerSwitches: { InstallLocation: 'INSTALLDIR="<INSTALLPATH>"' },
+        },
+      ],
+    });
+
+    const result = await getLatestInstallerInfo({} as never, 'Example.MixedInstaller', 'x64', 'machine');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('Expected machine MSI resolution');
+    expect(result.info.installerType).toBe('wix');
+    expect(result.info.silentSwitches).toBe('/qn /norestart ALLUSERS=1');
+    expect(result.info.installCommand).not.toMatch(/(^|\s)\/S(\s|$)/i);
   });
 
   it('selects the stored deployment scope when a release has user and machine variants', async () => {
@@ -641,9 +691,10 @@ describe('AutoUpdateTrigger psadtConfig handling', () => {
       installerType: 'msi',
       nestedInstallerType: undefined,
       nestedInstallerPath: undefined,
-    }, { skipRateLimits: true });
+    }, { skipRateLimits: true, admitViaQaResume: true });
 
     expect(result).toMatchObject({ success: true, packagingJobId: 'job-camera-hub' });
+    expect(createPackagingJobSpy.mock.calls[0][4]).toBe(true);
     const qaInput = ensureQaDemandMock.mock.calls[0][1] as {
       psadtConfig: string;
     };

@@ -31,7 +31,8 @@ const callback = (body: Record<string, unknown>) =>
   POST(new NextRequest('http://localhost/api/package/callback', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    // Upstream fences callbacks by GitHub run identity; the workflow always sends runId.
+    body: JSON.stringify({ runId: '4242', ...body }),
   }));
 
 async function seedJob(overrides: Record<string, unknown> = {}) {
