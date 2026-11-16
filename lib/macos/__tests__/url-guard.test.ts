@@ -29,3 +29,22 @@ describe('installer URL guard', () => {
     expect(fetchImpl.mock.calls[0][1]).toMatchObject({ redirect: 'manual' });
   });
 });
+
+describe('IPv6 and pinned lookup', () => {
+  it('allows only global unicast IPv6 outside tunnelling ranges', () => {
+    for (const a of ['::ffff:a00:1', '64:ff9b::a00:1', '2002:a00:1::1', '2001:0:4136:e378::1', '2001:db8::1', '::a00:1']) {
+      expect(isNonPublicAddress(a), a).toBe(true);
+    }
+    expect(isNonPublicAddress('2606:4700::6810:84e5')).toBe(false);
+  });
+
+  it('fails the socket lookup when the name answers with a private address', async () => {
+    const { publicOnlyLookup } = await import('../url-guard');
+    const lookup = publicOnlyLookup(async () => ['10.71.53.4']);
+    const err = await new Promise<Error | null>((resolve) => lookup('x.example', {}, (e) => resolve(e)));
+    expect(err?.message).toMatch(/non-public/);
+    const ok = publicOnlyLookup(async () => ['93.184.216.34']);
+    const address = await new Promise<string>((resolve) => ok('x.example', {}, (_e, a) => resolve(a as string)));
+    expect(address).toBe('93.184.216.34');
+  });
+});
