@@ -25,7 +25,7 @@ function decryptAssembled(blob: Buffer, info: FileEncryptionInfo): Buffer {
 }
 
 function deps(graph: ReturnType<typeof createFakeGraph>, net: ReturnType<typeof createFakeNetwork>, extra: Partial<UploadDeps> = {}): UploadDeps {
-  return { graph: graph.client, fetchImpl: net.fetch, sleep: noSleep, ...extra };
+  return { graph: graph.client, fetchImpl: net.fetch, sleep: noSleep, resolveHost: async () => ['93.184.216.34'], ...extra };
 }
 
 describe('Intune content encryption (streaming)', () => {

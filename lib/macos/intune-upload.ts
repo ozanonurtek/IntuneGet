@@ -8,6 +8,7 @@
  * creation/update path and Add-IntuneAppLogo).
  */
 
+import { defaultResolveHost, guardedFetch, type HostResolver } from './url-guard';
 import {
   BlockChunker,
   IntuneEncryptor,
@@ -45,6 +46,8 @@ export interface UploadDeps {
   graph: MacosGraphClient;
   /** Used for the installer download, Azure blob PUTs and the logo. */
   fetchImpl?: typeof fetch;
+  /** DNS resolver for the installer URL guard (tests inject a public address). */
+  resolveHost?: HostResolver;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   blockSize?: number;
@@ -149,6 +152,7 @@ class SasHolder {
 
 export async function deployMacosApp(input: DeployInput, deps: UploadDeps): Promise<DeployResult> {
   const fetchImpl = deps.fetchImpl ?? fetch;
+  const resolveHost = deps.resolveHost ?? defaultResolveHost;
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? Date.now;
   const blockSize = deps.blockSize ?? UPLOAD_BLOCK_SIZE;
@@ -166,7 +170,7 @@ export async function deployMacosApp(input: DeployInput, deps: UploadDeps): Prom
   let download: Response | null = null;
   let size: number | null = null;
   try {
-    const head = await fetchImpl(app.url, { method: 'HEAD', headers: DOWNLOAD_HEADERS, redirect: 'follow' });
+    const head = await guardedFetch(app.url, { method: 'HEAD', headers: DOWNLOAD_HEADERS }, fetchImpl, resolveHost);
     if (head.ok) size = contentLengthOf(head);
   } catch {
     size = null;
@@ -184,7 +188,7 @@ export async function deployMacosApp(input: DeployInput, deps: UploadDeps): Prom
   const openDownload = async () => {
     armIdle();
     try {
-      const response = await fetchImpl(app.url, { headers: DOWNLOAD_HEADERS, redirect: 'follow', signal: idle.signal });
+      const response = await guardedFetch(app.url, { headers: DOWNLOAD_HEADERS, signal: idle.signal }, fetchImpl, resolveHost);
       if (!response.ok || !response.body) {
         await response.body?.cancel().catch(() => {});
         throw new Error(`Installer download failed (HTTP ${response.status})`);
