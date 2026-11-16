@@ -1417,3 +1417,12 @@ export function closeSqliteDb(): void {
     db = null;
   }
 }
+
+/**
+ * The process-wide SQLite connection, for fork-only modules (lib/macos) that keep
+ * their own tables. The database can live on a share without byte-range locks,
+ * so a second connection in the same process is unsafe: always reuse this one.
+ */
+export function getSqliteConnection(): Database.Database {
+  return getDb();
+}

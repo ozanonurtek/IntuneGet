@@ -22,6 +22,7 @@ import {
   Lightbulb,
   PanelLeftClose,
   PanelLeftOpen,
+  Laptop,
 } from 'lucide-react';
 import { T } from 'gt-next';
 import { cn } from '@/lib/utils';
@@ -59,6 +60,7 @@ const managementNav: NavItem[] = [
   { name: 'SCCM Migration', href: '/dashboard/sccm', icon: FolderSync },
   { name: 'Inventory', href: '/dashboard/inventory', icon: Server },
   { name: 'App Updates', href: '/dashboard/updates', icon: ArrowUpCircle, badge: <UpdateBadge /> },
+  { name: 'macOS Apps', href: '/dashboard/macos', icon: Laptop },
 ];
 
 const analyticsNav: NavItem[] = [
