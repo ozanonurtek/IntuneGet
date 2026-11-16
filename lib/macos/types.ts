@@ -26,6 +26,50 @@ export interface MacosCatalogApp {
   fetchedAt: string;
 }
 
+/** Prefix of custom app ids; IntuneBrew ids never start with it (see validateManifest). */
+export const MACOS_CUSTOM_ID_PREFIX = 'custom-';
+
+export function isCustomAppId(id: string): boolean {
+  return id.startsWith(MACOS_CUSTOM_ID_PREFIX);
+}
+
+/** An app an admin defined for one tenant, outside the IntuneBrew catalog. */
+export interface MacosCustomApp {
+  id: string;
+  tenantId: string;
+  name: string;
+  publisher: string;
+  version: string;
+  bundleId: string;
+  url: string;
+  fileName: string;
+  sha256: string;
+  description: string | null;
+  homepage: string | null;
+  iconUrl: string | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** The uploader's view of a custom app. */
+export function customAppToCatalogApp(app: MacosCustomApp): MacosCatalogApp {
+  return {
+    id: app.id,
+    name: app.name,
+    version: app.version,
+    bundleId: app.bundleId,
+    publisher: app.publisher,
+    category: null,
+    description: app.description,
+    homepage: app.homepage,
+    url: app.url,
+    fileName: app.fileName,
+    sha256: app.sha256,
+    fetchedAt: app.updatedAt,
+  };
+}
+
 export interface MacosCatalogMeta {
   lastRefreshedAt: string | null;
   appCount: number;
@@ -84,6 +128,8 @@ export interface MacosTenantApp {
   catalogId: string | null;
   catalogName: string | null;
   catalogVersion: string | null;
+  /** The match is one of the tenant's custom apps, not an IntuneBrew entry. */
+  catalogCustom: boolean;
   updateAvailable: boolean;
   /** PKG/DMG apps can take a new content version; LOB apps cannot. */
   updateSupported: boolean;

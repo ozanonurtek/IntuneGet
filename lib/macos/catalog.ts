@@ -8,7 +8,7 @@
  * cannot point the server at an arbitrary host.
  */
 
-import type { MacosCatalogMeta } from './types';
+import { isCustomAppId, type MacosCatalogMeta } from './types';
 import {
   getCatalogMeta,
   listCatalogIds,
@@ -55,6 +55,8 @@ function optionalString(value: unknown): string | null {
 /** Validate one manifest. Exported for tests. */
 export function validateManifest(id: string, manifest: unknown): ManifestValidation {
   if (!CATALOG_ID_PATTERN.test(id)) return { kind: 'invalid', reason: 'catalog id has unsupported characters' };
+  // The prefix is reserved for tenant-defined custom apps (see custom-apps.ts).
+  if (isCustomAppId(id)) return { kind: 'invalid', reason: 'catalog id uses the reserved custom- prefix' };
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
     return { kind: 'invalid', reason: 'manifest is not an object' };
   }

@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dialog';
 import type { EntraIDGroup } from '@/types/intune';
 import type { MacosAssignment, MacosAssignmentIntent, MacosCatalogApp } from '@/lib/macos/types';
+import { isCustomAppId } from '@/lib/macos/types';
 import { readApiError } from './format';
 import { useMacosApi } from './useMacosApi';
 
@@ -109,7 +110,7 @@ export function DeployDialog({ app, onOpenChange, onQueued }: DeployDialogProps)
           <DialogTitle>Deploy {app?.name}</DialogTitle>
           <DialogDescription>
             Creates a new macOS {app?.fileName.toLowerCase().endsWith('.pkg') ? 'PKG' : 'DMG'} app in Intune with version{' '}
-            {app?.version}. The installer is checked against the catalog SHA-256 before it is committed.
+            {app?.version}. The installer is checked against the {app && isCustomAppId(app.id) ? 'saved' : 'catalog'} SHA-256 before it is committed.
           </DialogDescription>
         </DialogHeader>
 

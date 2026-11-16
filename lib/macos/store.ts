@@ -20,7 +20,7 @@ import type {
   MacosJobMode,
   MacosJobStatus,
 } from './types';
-import { MACOS_ACTIVE_JOB_STATUSES } from './types';
+import { MACOS_ACTIVE_JOB_STATUSES, isCustomAppId } from './types';
 
 export const INTERRUPTED_JOB_MESSAGE = 'Interrupted by an application restart; deploy again.';
 
@@ -105,6 +105,25 @@ export function ensureMacosSchema(db: BetterSqlite3.Database): void {
       completed_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_macos_jobs_tenant ON macos_jobs (tenant_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS macos_custom_apps (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      publisher TEXT NOT NULL,
+      version TEXT NOT NULL,
+      bundle_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      description TEXT,
+      homepage TEXT,
+      icon_url TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_macos_custom_apps_bundle
+      ON macos_custom_apps (tenant_id, bundle_id COLLATE NOCASE);
   `);
   // The job queue lives in this process only, so anything not terminal when the
   // schema is first touched belongs to a previous process and can never finish.
@@ -221,6 +240,8 @@ export function listCatalogIds(): string[] {
 }
 
 export function getCatalogApp(id: string): MacosCatalogApp | null {
+  // Custom ids live in macos_custom_apps (tenant-scoped); see custom-apps.ts.
+  if (isCustomAppId(id)) return null;
   const row = getMacosDb().prepare('SELECT * FROM macos_catalog WHERE id = ?').get(id) as CatalogRow | undefined;
   return row ? catalogFromRow(row) : null;
 }
@@ -358,14 +379,9 @@ export class ActiveJobExistsError extends Error {
  */
 export function insertJob(input: NewJobInput, now: string = new Date().toISOString()): MacosJob {
   const db = getMacosDb();
-  const placeholders = MACOS_ACTIVE_JOB_STATUSES.map(() => '?').join(', ');
   return db.transaction(() => {
-    const active = db
-      .prepare(
-        `SELECT * FROM macos_jobs WHERE tenant_id = ? AND catalog_id = ? AND status IN (${placeholders}) LIMIT 1`
-      )
-      .get(input.tenantId, input.catalogId, ...MACOS_ACTIVE_JOB_STATUSES) as JobRow | undefined;
-    if (active) throw new ActiveJobExistsError(jobFromRow(active));
+    const active = getActiveJobForApp(input.tenantId, input.catalogId);
+    if (active) throw new ActiveJobExistsError(active);
     const id = randomUUID();
     db.prepare(`INSERT INTO macos_jobs (id, tenant_id, user_id, user_email, catalog_id, app_name, version, mode,
         intune_app_id, assignments, ignore_version_detection, status, progress_percent, created_at, updated_at)
@@ -379,6 +395,15 @@ export function insertJob(input: NewJobInput, now: string = new Date().toISOStri
     });
     return jobFromRow(db.prepare('SELECT * FROM macos_jobs WHERE id = ?').get(id) as JobRow);
   })();
+}
+
+/** The tenant's queued or running job for a catalog or custom app id, if any. */
+export function getActiveJobForApp(tenantId: string, catalogId: string): MacosJob | null {
+  const placeholders = MACOS_ACTIVE_JOB_STATUSES.map(() => '?').join(', ');
+  const row = getMacosDb()
+    .prepare(`SELECT * FROM macos_jobs WHERE tenant_id = ? AND catalog_id = ? AND status IN (${placeholders}) LIMIT 1`)
+    .get(tenantId, catalogId, ...MACOS_ACTIVE_JOB_STATUSES) as JobRow | undefined;
+  return row ? jobFromRow(row) : null;
 }
 
 export interface JobPatch {

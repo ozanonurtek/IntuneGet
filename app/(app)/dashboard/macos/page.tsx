@@ -51,7 +51,7 @@ export default function MacosAppsPage() {
         title="macOS Apps"
         description={
           <>
-            Deploy and update macOS PKG/DMG apps from the IntuneBrew catalog.
+            Deploy and update macOS PKG/DMG apps from the IntuneBrew catalog or your own custom apps.
             {meta && (
               <span className="block text-xs mt-1">
                 {meta.appCount} apps, last refreshed {formatDateTime(meta.lastRefreshedAt)}

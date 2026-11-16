@@ -2,17 +2,21 @@
  * POST /api/macos/deploy
  * Body: { catalogId, mode: 'new' | 'update', intuneAppId?, assignments, ignoreVersionDetection? }
  *
- * Queues a deploy of an IntuneBrew catalog app: a new Intune app with group
+ * Queues a deploy of an IntuneBrew catalog app or one of the tenant's custom
+ * apps (catalogId `custom-...`): a new Intune app with group
  * assignments, or a new content version on an existing PKG/DMG app (its
  * assignments are left untouched).
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { logoUrl } from '@/lib/macos/catalog';
 import { GraphRequestError } from '@/lib/macos/graph';
 import { appTypeForFileName } from '@/lib/macos/intune-upload';
 import { createGraphClientForTenant, enqueueMacosJob } from '@/lib/macos/jobs';
 import { errorMessage, gateMacosRequest } from '@/lib/macos/route-auth';
-import { ActiveJobExistsError, getCatalogApp } from '@/lib/macos/store';
+import { resolveDeployableApp } from '@/lib/macos/custom-apps';
+import { ActiveJobExistsError } from '@/lib/macos/store';
+import { isCustomAppId } from '@/lib/macos/types';
 import { listIntuneMacApps, parseIntuneMacApp } from '@/lib/macos/tenant-apps';
 import { macosDeploySchema } from '@/lib/macos/validators';
 
@@ -39,8 +43,15 @@ export async function POST(request: NextRequest) {
   }
   const input = parsed.data;
 
-  const app = getCatalogApp(input.catalogId);
-  if (!app) return NextResponse.json({ error: 'The app is not in the macOS catalog' }, { status: 404 });
+  // Custom ids resolve only within the caller's tenant.
+  const resolved = resolveDeployableApp(input.catalogId, ctx.tenantId, logoUrl);
+  if (!resolved) {
+    return NextResponse.json(
+      { error: isCustomAppId(input.catalogId) ? 'The custom app was not found' : 'The app is not in the macOS catalog' },
+      { status: 404 }
+    );
+  }
+  const { app } = resolved;
   const installerType = appTypeForFileName(app.fileName);
   const graph = createGraphClientForTenant(ctx.tenantId);
 
@@ -69,7 +80,7 @@ export async function POST(request: NextRequest) {
       if (target.appType !== installerType) {
         return NextResponse.json(
           {
-            error: `The Intune app is a ${target.appType === 'macOSPkgApp' ? 'PKG' : 'DMG'} app but the catalog installer is a ${installerType === 'macOSPkgApp' ? 'PKG' : 'DMG'}; it cannot be updated in place.`,
+            error: `The Intune app is a ${target.appType === 'macOSPkgApp' ? 'PKG' : 'DMG'} app but the installer is a ${installerType === 'macOSPkgApp' ? 'PKG' : 'DMG'}; it cannot be updated in place.`,
           },
           { status: 409 }
         );

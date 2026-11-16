@@ -44,7 +44,7 @@ export function appTypeForFileName(fileName: string): 'macOSPkgApp' | 'macOSDmgA
 
 export interface UploadDeps {
   graph: MacosGraphClient;
-  /** Used for the installer download, Azure blob PUTs and the logo. */
+  /** Used for the installer download, Azure blob PUTs and the logo (tests). */
   fetchImpl?: typeof fetch;
   /** DNS resolver for the installer URL guard (tests inject a public address). */
   resolveHost?: HostResolver;
@@ -416,7 +416,7 @@ export async function deployMacosApp(input: DeployInput, deps: UploadDeps): Prom
     report('assigning', 0);
     if (input.logoUrl) {
       try {
-        await setLogo(graph, fetchImpl, intuneAppId, appType, input.logoUrl);
+        await setLogo(graph, downloadFetch, resolveHost, intuneAppId, appType, input.logoUrl);
       } catch {
         // Non-fatal, like IntuneBrew's Add-IntuneAppLogo.
       }
@@ -439,11 +439,14 @@ export async function deployMacosApp(input: DeployInput, deps: UploadDeps): Prom
 async function setLogo(
   graph: MacosGraphClient,
   fetchImpl: typeof fetch,
+  resolveHost: HostResolver,
   appId: string,
   appType: MacosIntuneAppType,
   url: string
 ): Promise<void> {
-  const response = await fetchImpl(url, { signal: AbortSignal.timeout(20_000) });
+  // Custom apps carry an admin-supplied icon URL, so the logo goes through the
+  // same public-host guard as the installer.
+  const response = await guardedFetch(url, { signal: AbortSignal.timeout(20_000) }, fetchImpl, resolveHost);
   if (!response.ok) return;
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length === 0 || bytes.length > MAX_LOGO_BYTES) return;

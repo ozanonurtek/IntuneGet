@@ -1,5 +1,5 @@
 /**
- * The tenant's macOS apps in Intune, matched to the IntuneBrew catalog.
+ * The tenant's macOS apps in Intune, matched to its custom apps and the IntuneBrew catalog.
  */
 
 import { compareVersions } from '@/lib/version-compare';
@@ -37,8 +37,20 @@ export function parseIntuneMacApp(raw: Record<string, unknown>): IntuneMacApp | 
   return { id, displayName: str(raw.displayName) || id, appType, bundleId, version };
 }
 
-/** Match by bundle id (case-insensitive), falling back to the display name. */
-export function matchTenantApps(intuneApps: IntuneMacApp[], catalog: MacosCatalogApp[]): MacosTenantApp[] {
+/**
+ * Match by bundle id (case-insensitive): the tenant's custom apps first, then
+ * the catalog, falling back to the catalog display name.
+ */
+export function matchTenantApps(
+  intuneApps: IntuneMacApp[],
+  catalog: MacosCatalogApp[],
+  customApps: MacosCatalogApp[] = []
+): MacosTenantApp[] {
+  const customByBundle = new Map<string, MacosCatalogApp>();
+  for (const entry of customApps) {
+    const bundle = entry.bundleId.toLowerCase();
+    if (!customByBundle.has(bundle)) customByBundle.set(bundle, entry);
+  }
   const byBundle = new Map<string, MacosCatalogApp>();
   const byName = new Map<string, MacosCatalogApp>();
   for (const entry of catalog) {
@@ -49,8 +61,9 @@ export function matchTenantApps(intuneApps: IntuneMacApp[], catalog: MacosCatalo
   }
   return intuneApps
     .map((app) => {
-      const match =
-        (app.bundleId && byBundle.get(app.bundleId.toLowerCase())) || byName.get(app.displayName.toLowerCase()) || null;
+      const bundle = app.bundleId?.toLowerCase();
+      const custom = (bundle && customByBundle.get(bundle)) || null;
+      const match = custom || (bundle && byBundle.get(bundle)) || byName.get(app.displayName.toLowerCase()) || null;
       const updateAvailable = Boolean(
         match && (!app.version || compareVersions(match.version, app.version) > 0)
       );
@@ -63,6 +76,7 @@ export function matchTenantApps(intuneApps: IntuneMacApp[], catalog: MacosCatalo
         catalogId: match?.id ?? null,
         catalogName: match?.name ?? null,
         catalogVersion: match?.version ?? null,
+        catalogCustom: custom !== null,
         updateAvailable,
         updateSupported: app.appType !== 'macOSLobApp',
       };

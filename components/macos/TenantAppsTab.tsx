@@ -126,7 +126,14 @@ export function TenantAppsTab({ onQueued }: TenantAppsTabProps) {
                     </td>
                     <td className="px-4 py-3 text-text-secondary">{TYPE_LABELS[app.appType]}</td>
                     <td className="px-4 py-3 font-mono text-text-secondary">{app.installedVersion || '-'}</td>
-                    <td className="px-4 py-3 font-mono text-text-secondary">{app.catalogVersion || '-'}</td>
+                    <td className="px-4 py-3 font-mono text-text-secondary">
+                      {app.catalogVersion || '-'}
+                      {app.catalogCustom && (
+                        <span className="ml-2 font-sans text-[11px] px-1.5 py-0.5 rounded-md border border-accent-cyan/30 text-accent-cyan">
+                          Custom
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       {!app.catalogId ? (
                         <StatusBadge tone="muted">Not in catalog</StatusBadge>

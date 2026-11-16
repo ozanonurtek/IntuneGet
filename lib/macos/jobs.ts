@@ -8,8 +8,9 @@ import { getServicePrincipalToken } from '@/lib/intune/graph-client';
 import { logoUrl } from './catalog';
 import { MacosGraphClient } from './graph';
 import { deployMacosApp, type DeployResult } from './intune-upload';
-import { getCatalogApp, getJob, insertJob, updateJob, type NewJobInput } from './store';
-import type { MacosJob } from './types';
+import { resolveDeployableApp, type DeployableApp } from './custom-apps';
+import { getJob, insertJob, updateJob, type NewJobInput } from './store';
+import { isCustomAppId, type MacosJob } from './types';
 
 export type MacosJobExecutor = (job: MacosJob) => Promise<DeployResult>;
 
@@ -42,9 +43,21 @@ export function createGraphClientForTenant(tenantId: string): MacosGraphClient {
   return new MacosGraphClient(() => getServicePrincipalToken(tenantId));
 }
 
+/** The app a job deploys: custom ids from the job tenant's custom apps, others from the catalog. */
+export function resolveJobApp(job: Pick<MacosJob, 'catalogId' | 'tenantId'>): DeployableApp {
+  const resolved = resolveDeployableApp(job.catalogId, job.tenantId, logoUrl);
+  if (!resolved) {
+    throw new Error(
+      isCustomAppId(job.catalogId)
+        ? 'The custom app no longer exists for this tenant.'
+        : 'The app is no longer in the macOS catalog.'
+    );
+  }
+  return resolved;
+}
+
 const defaultExecutor: MacosJobExecutor = async (job) => {
-  const app = getCatalogApp(job.catalogId);
-  if (!app) throw new Error('The app is no longer in the macOS catalog.');
+  const { app, logoUrl: logo } = resolveJobApp(job);
   return deployMacosApp(
     {
       app,
@@ -52,7 +65,7 @@ const defaultExecutor: MacosJobExecutor = async (job) => {
       intuneAppId: job.intuneAppId,
       assignments: job.assignments,
       ignoreVersionDetection: job.ignoreVersionDetection,
-      logoUrl: logoUrl(app.id),
+      logoUrl: logo,
     },
     {
       graph: createGraphClientForTenant(job.tenantId),
