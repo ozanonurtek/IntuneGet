@@ -16,6 +16,7 @@ export const defaultResolveHost: HostResolver = async (hostname) =>
   (await lookup(hostname, { all: true, verbatim: true })).map((entry) => entry.address);
 
 const MAX_REDIRECTS = 5;
+const SOCKET_IDLE_TIMEOUT_MS = 120_000;
 
 function ipv4Parts(address: string): number[] | null {
   const parts = address.split('.').map(Number);
@@ -147,6 +148,9 @@ export function pinnedHttpsFetch(resolveHost: HostResolver): typeof fetch {
       if (nullBody) res.resume();
       resolve(new Response(nullBody ? null : (Readable.toWeb(res) as ReadableStream<Uint8Array>), { status, headers: responseHeaders }));
     });
+    // Socket inactivity limit: a server that stops sending fails the request
+    // instead of holding the single-job queue.
+    req.setTimeout(SOCKET_IDLE_TIMEOUT_MS, () => req.destroy(new Error('Installer server stopped responding')));
     req.on('error', reject);
     req.end();
   })) as typeof fetch;

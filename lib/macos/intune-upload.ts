@@ -172,7 +172,7 @@ export async function deployMacosApp(input: DeployInput, deps: UploadDeps): Prom
   let download: Response | null = null;
   let size: number | null = null;
   try {
-    const head = await guardedFetch(app.url, { method: 'HEAD', headers: DOWNLOAD_HEADERS }, downloadFetch, resolveHost);
+    const head = await guardedFetch(app.url, { method: 'HEAD', headers: DOWNLOAD_HEADERS, signal: AbortSignal.timeout(30_000) }, downloadFetch, resolveHost);
     if (head.ok) size = contentLengthOf(head);
   } catch {
     size = null;
