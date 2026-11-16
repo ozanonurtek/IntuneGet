@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient, isSupabaseServerConfigured } from '@/lib/supabase';
 import { getCatalogSource } from '@/lib/catalog';
 import { parseAccessToken } from '@/lib/auth-utils';
+import { resolveTargetTenantId } from '@/lib/msp/tenant-resolution';
 import {
   AutoUpdateTrigger,
   getLatestInstallerInfo,
@@ -96,6 +97,22 @@ export async function POST(request: NextRequest) {
 
     const supabase = createServerClient();
 
+    // The tenant ids come from the request body. Each one must be the
+    // caller's own tenant or a customer tenant their MSP role may deploy to.
+    // Rows stored earlier for a tenant are not proof of current access.
+    for (const tenantId of new Set(updateRequests.map((req) => req.tenant_id))) {
+      const tenantResolution = await resolveTargetTenantId({
+        supabase,
+        userId: user.userId,
+        tokenTenantId: user.tenantId,
+        requestedTenantId: tenantId,
+        requiredPermission: 'deploy_apps',
+      });
+      if (tenantResolution.errorResponse) {
+        return tenantResolution.errorResponse;
+      }
+    }
+
     // Get Supabase config for trigger
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -133,12 +150,6 @@ export async function POST(request: NextRequest) {
     const supersedePrevious = Boolean(userSettings?.supersedePreviousApp);
 
     for (const req of updateRequests) {
-      let restorePolicyState: {
-        id: string;
-        policy_type: AppUpdatePolicy['policy_type'];
-        is_enabled: boolean;
-      } | null = null;
-
       try {
         // Self-updating apps are excluded from update detection; guard here
         // too in case a stale check result from before the exclusion remains
@@ -250,25 +261,11 @@ export async function POST(request: NextRequest) {
           policy = newPolicy;
         }
 
-        // Temporarily enable auto-update for manual trigger.
-        // We always restore this in finally if we changed it.
-        const shouldTemporarilyEnable =
-          policy.policy_type !== 'auto_update' || !policy.is_enabled;
-        if (shouldTemporarilyEnable) {
-          restorePolicyState = {
-            id: policy.id,
-            policy_type: policy.policy_type,
-            is_enabled: policy.is_enabled,
-          };
-
-          await supabase
-            .from('app_update_policies')
-            .update({ policy_type: 'auto_update', is_enabled: true })
-            .eq('id', policy.id);
-
-          policy.policy_type = 'auto_update';
-          policy.is_enabled = true;
-        }
+        // This explicit attempt does not resume the stored automatic policy.
+        // Keep the same attempt object through config backfills and dispatch.
+        policy.policy_type = 'auto_update';
+        policy.is_enabled = true;
+        policy.consecutive_failures = 0;
 
         // Get installer info
         const deploymentConfig = policy.deployment_config as unknown as DeploymentConfig | null;
@@ -417,23 +414,6 @@ export async function POST(request: NextRequest) {
           success: false,
           error: error instanceof Error ? error.message : 'Unknown error',
         });
-      } finally {
-        if (restorePolicyState) {
-          const { error: restoreError } = await supabase
-            .from('app_update_policies')
-            .update({
-              policy_type: restorePolicyState.policy_type,
-              is_enabled: restorePolicyState.is_enabled,
-            })
-            .eq('id', restorePolicyState.id);
-
-          if (restoreError) {
-            console.error(
-              `Failed to restore update policy ${restorePolicyState.id}:`,
-              restoreError.message
-            );
-          }
-        }
       }
     }
 

@@ -5,6 +5,8 @@
  */
 
 import { NextResponse } from 'next/server';
+import { processDueWebhookDeliveries } from '@/lib/msp/webhook-service';
+import { isAuthorizedCronRequest } from '@/lib/cron-auth';
 import {
   processPendingBatches,
   advanceInProgressBatches,
@@ -12,8 +14,7 @@ import {
 
 export async function GET(request: Request) {
   // Verify cron secret
-  const authHeader = request.headers.get('authorization');
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -34,10 +35,18 @@ export async function GET(request: Request) {
     // Advance in-progress batches (recover stale items, check completion)
     const recoveryResult = await advanceInProgressBatches();
 
+    let webhooks = 0;
+    try {
+      webhooks = await processDueWebhookDeliveries();
+    } catch {
+      console.error('MSP webhook retry processing failed');
+    }
+
     const allErrors = [...batchResult.errors, ...recoveryResult.errors];
 
     return NextResponse.json({
       success: allErrors.length === 0,
+      webhooks,
       processed: batchResult.batchesProcessed,
       started: batchResult.itemsStarted,
       recovered: recoveryResult.staleItemsRecovered,

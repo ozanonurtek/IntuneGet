@@ -110,7 +110,8 @@ export function buildAutoUpdateWorkflowInputs(args: {
     forceCreate: deploymentConfig.forceCreateNewApp !== false,
     sourceIntuneAppId: installer.currentIntuneAppId || undefined,
     carryOverAssignments: args.carryOverAssignments,
-    removeAssignmentsFromPreviousApp: args.carryOverAssignments,
+    // Upstream keeps the previous app's assignments when an update copies them
+    removeAssignmentsFromPreviousApp: false,
     autoSupersede: args.supersedePrevious,
     supersedenceType: args.supersedePrevious ? 'update' : undefined,
     packageProfileSha256: args.packageProfileSha256,

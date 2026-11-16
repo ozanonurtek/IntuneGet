@@ -7,9 +7,11 @@
  */
 
 import { NextResponse } from 'next/server';
+import { isAuthorizedCronRequest } from '@/lib/cron-auth';
 import { getFeatureFlags } from '@/lib/features';
 import { reconcileRunnerLosses } from '@/lib/runner-loss-reconciliation';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { sendDeploymentWaitingNotices } from '@/lib/deployment-waiting-notices';
 import { handleAutoUpdateJobCompletion } from '@/lib/auto-update/cleanup';
 import {
   STALE_JOB_TIMEOUT_MINUTES,
@@ -20,8 +22,7 @@ import {
 
 export async function GET(request: Request) {
   // Verify cron secret
-  const authHeader = request.headers.get('authorization');
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -37,6 +38,14 @@ export async function GET(request: Request) {
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+  const cleanup = await runStaleCleanup(supabase);
+  const deploymentWaiting = await sendDeploymentWaitingNotices(supabase, Date.now()).catch(() => ({
+    error: 'Waiting notification scan unavailable',
+  }));
+  return NextResponse.json({ ...await cleanup.json(), deploymentWaiting }, { status: cleanup.status });
+}
+
+async function runStaleCleanup(supabase: SupabaseClient) {
   try {
     const early = getFeatureFlags().localPackager ? { reconciled: 0, deferred: false } : await reconcileRunnerLosses(supabase);
     const cutoffTime = new Date(

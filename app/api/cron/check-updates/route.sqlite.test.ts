@@ -15,6 +15,21 @@ vi.mock('@/lib/catalog', () => ({
   }),
 }));
 
+// Delivery goes through postWebhook (DNS-pinned node:https). These tests assert
+// on the request itself, so the transport is routed back to the stubbed fetch and
+// the destination is treated as public.
+vi.mock('@/lib/webhooks/destination', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/webhooks/destination')>()),
+  validateWebhookDestination: async () => undefined,
+  postWebhook: async (
+    url: string,
+    init: { headers: Record<string, string>; body: string }
+  ) => {
+    const response = await fetch(url, { method: 'POST', headers: init.headers, body: init.body });
+    return { status: response.status, bodyExcerpt: (await response.text()).slice(0, 4096) };
+  },
+}));
+
 let tempDir: string;
 let route: typeof import('@/app/api/cron/check-updates/route');
 let sqlite: typeof import('@/lib/db/sqlite');
@@ -138,7 +153,7 @@ describe('check-updates cron in SQLite mode', () => {
     const webhook = await seedDeploymentAndWebhook();
     // A 4xx is not retried by deliverWebhook, keeping the test fast and the
     // call count deterministic.
-    const fetchMock = vi.fn().mockResolvedValue(new Response('nope', { status: 400 }));
+    const fetchMock = vi.fn().mockImplementation(async () => new Response('nope', { status: 400 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const first = await route.GET(request('secret'));

@@ -11,6 +11,7 @@ import { getDatabase, isSqliteMode } from '@/lib/db';
 import { parseAccessToken } from '@/lib/auth-utils';
 import { WEBHOOK_STORAGE_UNAVAILABLE_MESSAGE } from '@/types/notifications';
 import { MASKED_WEBHOOK_URL, maskWebhookUrl, validateWebhookUrl } from '@/lib/webhooks/service';
+import { validateWebhookDestination } from '@/lib/webhooks/destination';
 import type {
   WebhookConfiguration,
   WebhookConfigurationUpdate,
@@ -134,7 +135,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
 
     // Validate URL if provided
-    if (body.url) {
+    if (body.url !== undefined) {
       const urlValidation = validateWebhookUrl(body.url);
       if (!urlValidation.valid) {
         return NextResponse.json(
@@ -173,6 +174,17 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     if (!isSupabaseServerConfigured()) {
       return NextResponse.json({ error: WEBHOOK_STORAGE_UNAVAILABLE_MESSAGE }, { status: 503 });
+    }
+
+    // A new destination must resolve to public addresses only
+    if (body.url !== undefined) {
+      const destination = await validateWebhookDestination(body.url);
+      if (!destination.valid) {
+        return NextResponse.json(
+          { error: destination.error || 'Invalid webhook URL' },
+          { status: 400 }
+        );
+      }
     }
 
     const supabase = createServerClient();

@@ -11,6 +11,21 @@ vi.mock('@/lib/supabase', () => ({
   isSupabaseServerConfigured: () => false,
 }));
 
+// Delivery goes through postWebhook (DNS-pinned node:https). These tests assert
+// on the request itself, so the transport is routed back to the stubbed fetch and
+// the destination is treated as public.
+vi.mock('@/lib/webhooks/destination', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/webhooks/destination')>()),
+  validateWebhookDestination: async () => undefined,
+  postWebhook: async (
+    url: string,
+    init: { headers: Record<string, string>; body: string }
+  ) => {
+    const response = await fetch(url, { method: 'POST', headers: init.headers, body: init.body });
+    return { status: response.status, bodyExcerpt: (await response.text()).slice(0, 4096) };
+  },
+}));
+
 let route: typeof import('./route');
 let testRoute: typeof import('./test/route');
 let sqlite: typeof import('@/lib/db/sqlite');

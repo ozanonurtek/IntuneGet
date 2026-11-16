@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import type { AppUpdatePolicy, DeploymentConfig } from '@/types/update-policies';
+import { canAutoUpdate } from '@/types/update-policies';
 
 const {
   parseAccessTokenMock,
@@ -51,6 +52,18 @@ vi.mock('@/lib/features', () => ({
   getFeatureFlags: getFeatureFlagsMock,
 }));
 
+// Tenant authorization has its own tests in lib/msp/tenant-resolution.test.ts.
+// Here it allows the requested tenant unless a test says otherwise.
+const { resolveTargetTenantIdMock } = vi.hoisted(() => ({ resolveTargetTenantIdMock: vi.fn() }));
+vi.mock('@/lib/msp/tenant-resolution', () => ({
+  resolveTargetTenantId: resolveTargetTenantIdMock,
+}));
+const allowRequestedTenant = async ({ requestedTenantId }: { requestedTenantId: string }) => ({
+  tenantId: requestedTenantId,
+  errorResponse: null,
+});
+
+import { NextResponse } from 'next/server';
 import { POST } from '@/app/api/updates/trigger/route';
 
 interface TriggerSupabaseMocks {
@@ -104,7 +117,7 @@ function createTriggerSupabaseMocks(
 
       if (table === 'app_update_policies') {
         return {
-          select: vi.fn(() => createSingleResultChain(policy)),
+          select: vi.fn(() => createSingleResultChain({ ...policy })),
           update: vi.fn((payload: Record<string, unknown>) => {
             policyUpdatePayloads.push(payload);
             return {
@@ -174,9 +187,43 @@ describe('POST /api/updates/trigger', () => {
       tenantId: 'home-tenant',
       userName: 'User',
     });
+    resolveTargetTenantIdMock.mockImplementation(allowRequestedTenant);
   });
 
-  it('restores original policy fields when installer lookup fails', async () => {
+  it('refuses the whole request when one of the named tenants is not the caller\'s to deploy to', async () => {
+    const from = vi.fn(() => {
+      throw new Error('no table may be touched before authorization');
+    });
+    createServerClientMock.mockReturnValue({ from });
+    resolveTargetTenantIdMock.mockImplementation(async ({ requestedTenantId }: { requestedTenantId: string }) =>
+      requestedTenantId === 'someone-elses-tenant'
+        ? { tenantId: 'home-tenant', errorResponse: NextResponse.json({ error: 'Not authorized to access other tenants' }, { status: 403 }) }
+        : { tenantId: requestedTenantId, errorResponse: null }
+    );
+
+    const response = await POST(
+      new NextRequest('http://localhost:3000/api/updates/trigger', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          updates: [
+            { winget_id: 'Vendor.One', tenant_id: 'tenant-1' },
+            { winget_id: 'Vendor.Two', tenant_id: 'someone-elses-tenant' },
+          ],
+        }),
+      })
+    );
+
+    expect(response.status).toBe(403);
+    expect(from).not.toHaveBeenCalled();
+    expect(triggerAutoUpdateMock).not.toHaveBeenCalled();
+    expect(triggerPackagingWorkflowMock).not.toHaveBeenCalled();
+    expect(resolveTargetTenantIdMock).toHaveBeenCalledWith(
+      expect.objectContaining({ requestedTenantId: 'tenant-1', requiredPermission: 'deploy_apps', tokenTenantId: 'home-tenant' })
+    );
+  });
+
+  it('leaves stored policy fields untouched when installer lookup fails', async () => {
     const policy: AppUpdatePolicy = {
       id: 'policy-1',
       user_id: 'user-1',
@@ -224,13 +271,10 @@ describe('POST /api/updates/trigger', () => {
     expect(body.success).toBe(false);
     expect(body.failed).toBe(1);
     expect(body.results[0].error).toBe(failureMessage);
-    expect(policyUpdatePayloads).toEqual([
-      { policy_type: 'auto_update', is_enabled: true },
-      { policy_type: 'notify', is_enabled: false },
-    ]);
+    expect(policyUpdatePayloads).toEqual([]);
   });
 
-  it('restores original policy fields when trigger throws', async () => {
+  it('leaves stored policy fields untouched when trigger throws', async () => {
     const policy: AppUpdatePolicy = {
       id: 'policy-1',
       user_id: 'user-1',
@@ -275,13 +319,10 @@ describe('POST /api/updates/trigger', () => {
     expect(body.success).toBe(false);
     expect(body.failed).toBe(1);
     expect(body.results[0].error).toContain('trigger crashed');
-    expect(policyUpdatePayloads).toEqual([
-      { policy_type: 'auto_update', is_enabled: true },
-      { policy_type: 'notify', is_enabled: false },
-    ]);
+    expect(policyUpdatePayloads).toEqual([]);
   });
 
-  it('restores temporary manual policy settings and never dispatches when fixed rules hold the update', async () => {
+  it('preserves stored manual policy settings and never dispatches when fixed rules hold the update', async () => {
     const policy = {id:'policy-1',user_id:'user-1',tenant_id:'tenant-1',winget_id:'Microsoft.Edge',policy_type:'notify',is_enabled:false,consecutive_failures:0,deployment_config:{architecture:'x64',psadtConfig:{customDetection:true}},original_upload_history_id:null} as AppUpdatePolicy;
     const {supabase,policyUpdatePayloads}=createTriggerSupabaseMocks(policy);
     createServerClientMock.mockReturnValue(supabase);
@@ -289,8 +330,35 @@ describe('POST /api/updates/trigger', () => {
     triggerAutoUpdateMock.mockResolvedValue({success:false,skipped:true,skipReason:'Custom detection rules are fixed. Deploy 2.0.0 from the catalog with updated rules.'});
     const response=await POST(new NextRequest('http://localhost:3000/api/updates/trigger',{method:'POST',headers:{Authorization:'Bearer test-token','Content-Type':'application/json'},body:JSON.stringify({winget_id:'Microsoft.Edge',tenant_id:'tenant-1'})}));
     expect((await response.json()).results[0]).toMatchObject({success:false,skipped:true});
-    expect(policyUpdatePayloads).toEqual([{policy_type:'auto_update',is_enabled:true},{policy_type:'notify',is_enabled:false}]);
+    expect(policyUpdatePayloads).toEqual([]);
     expect(triggerPackagingWorkflowMock).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('runs a paused automatic policy once without enabling stored state, trigger failure: %s', async fails => {
+    const policy = { id: 'policy-1', user_id: 'user-1', tenant_id: 'tenant-1',
+      winget_id: 'Microsoft.Edge', policy_type: 'auto_update', is_enabled: false,
+      consecutive_failures: 3, deployment_config: { architecture: 'x64' },
+      original_upload_history_id: null } as AppUpdatePolicy;
+    const { supabase, policyUpdatePayloads } = createTriggerSupabaseMocks(policy);
+    createServerClientMock.mockReturnValue(supabase);
+    getLatestInstallerInfoMock.mockResolvedValue({ ok: true, info: {
+      wingetId: 'Microsoft.Edge', currentVersion: '', latestVersion: '2.0.0' } });
+    triggerAutoUpdateMock.mockImplementation(async (attempt: AppUpdatePolicy) => {
+      expect(canAutoUpdate(attempt)).toBe(true);
+      expect(attempt.consecutive_failures).toBe(0);
+      if (fails) throw new Error('synthetic trigger failure');
+      return { success: true, packagingJobId: 'manual-job' };
+    });
+    getFeatureFlagsMock.mockReturnValue({ localPackager: true });
+    const response = await POST(new NextRequest('http://localhost:3000/api/updates/trigger', {
+      method: 'POST', headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ winget_id: 'Microsoft.Edge', tenant_id: 'tenant-1' }),
+    }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).triggered).toBe(fails ? 0 : 1);
+    expect(triggerAutoUpdateMock).toHaveBeenCalledOnce();
+    expect(policyUpdatePayloads).toEqual([]);
+    expect(policy).toMatchObject({ policy_type: 'auto_update', is_enabled: false, consecutive_failures: 3 });
   });
 
   it('returns an explicit skipped result when auto-update is blocked by current QA', async () => {
@@ -389,7 +457,7 @@ describe('POST /api/updates/trigger', () => {
 
     const { supabase } = createTriggerSupabaseMocks(policy, {
       latestUploadIntuneAppId: 'prev-app-1',
-      userSettings: { supersedePreviousApp: true },
+      userSettings: { carryOverAssignments: true, supersedePreviousApp: true },
     });
     createServerClientMock.mockReturnValue(supabase);
     getLatestInstallerInfoMock.mockResolvedValue({
@@ -437,6 +505,8 @@ describe('POST /api/updates/trigger', () => {
         jobId: 'pkg-job-1',
         relationships: JSON.stringify(relationships),
         sourceIntuneAppId: 'prev-app-1',
+        carryOverAssignments: true,
+        removeAssignmentsFromPreviousApp: false,
         autoSupersede: true,
         supersedenceType: 'update',
       }),
