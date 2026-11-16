@@ -6,6 +6,7 @@
  * public IntuneBrew logos for known apps.
  */
 
+import { readBodyCapped } from '@/lib/macos/url-guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { CATALOG_ID_PATTERN, logoUrl } from '@/lib/macos/catalog';
 import { sqliteOnlyResponse } from '@/lib/macos/route-auth';
@@ -27,8 +28,8 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   try {
     const response = await fetch(logoUrl(id), { signal: AbortSignal.timeout(15_000) });
     if (!response.ok) return notFound();
-    const bytes = await response.arrayBuffer();
-    if (bytes.byteLength === 0 || bytes.byteLength > MAX_ICON_BYTES) return notFound();
+    const bytes = await readBodyCapped(response, MAX_ICON_BYTES);
+    if (!bytes || bytes.byteLength === 0) return notFound();
     return new NextResponse(bytes, {
       status: 200,
       headers: {

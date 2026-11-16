@@ -48,3 +48,14 @@ describe('IPv6 and pinned lookup', () => {
     expect(address).toBe('93.184.216.34');
   });
 });
+
+describe('readBodyCapped', () => {
+  it('stops reading once the body passes the cap, without trusting Content-Length', async () => {
+    const { readBodyCapped } = await import('../url-guard');
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({ pull(c) { pulled++; c.enqueue(new Uint8Array(1024)); } });
+    expect(await readBodyCapped(new Response(stream), 4096)).toBeNull();
+    expect(pulled).toBeLessThan(10);
+    expect((await readBodyCapped(new Response(new Uint8Array(10)), 4096))?.byteLength).toBe(10);
+  });
+});

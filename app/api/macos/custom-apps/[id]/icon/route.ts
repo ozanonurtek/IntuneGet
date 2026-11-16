@@ -12,7 +12,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSqliteMode } from '@/lib/db';
 import { CUSTOM_APP_ID_PATTERN, getCustomAppIconUrl } from '@/lib/macos/custom-apps';
 import { sqliteOnlyResponse } from '@/lib/macos/route-auth';
-import { defaultResolveHost, guardedFetch, pinnedHttpsFetch } from '@/lib/macos/url-guard';
+import { defaultResolveHost, guardedFetch, pinnedHttpsFetch, readBodyCapped } from '@/lib/macos/url-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,8 +42,8 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       await response.body?.cancel().catch(() => {});
       return notFound();
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength === 0 || bytes.byteLength > MAX_ICON_BYTES) return notFound();
+    const bytes = await readBodyCapped(response, MAX_ICON_BYTES);
+    if (!bytes || bytes.byteLength === 0) return notFound();
     if (!PNG_SIGNATURE.every((byte, index) => bytes[index] === byte)) return notFound();
     return new NextResponse(bytes, {
       status: 200,

@@ -8,7 +8,7 @@
  * creation/update path and Add-IntuneAppLogo).
  */
 
-import { defaultResolveHost, guardedFetch, pinnedHttpsFetch, type HostResolver } from './url-guard';
+import { defaultResolveHost, guardedFetch, pinnedHttpsFetch, readBodyCapped, type HostResolver } from './url-guard';
 import {
   BlockChunker,
   IntuneEncryptor,
@@ -448,8 +448,9 @@ async function setLogo(
   // same public-host guard as the installer.
   const response = await guardedFetch(url, { signal: AbortSignal.timeout(20_000) }, fetchImpl, resolveHost);
   if (!response.ok) return;
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length === 0 || bytes.length > MAX_LOGO_BYTES) return;
+  const capped = await readBodyCapped(response, MAX_LOGO_BYTES);
+  if (!capped || capped.byteLength === 0) return;
+  const bytes = Buffer.from(capped);
   await graph.patchApp(
     appId,
     {
