@@ -5,7 +5,7 @@
 
 import { fetchWithRetry } from '@/lib/intune/graph-client';
 import type { FileEncryptionInfo } from './crypto';
-import type { MacosAssignment, MacosIntuneAppType } from './types';
+import type { MacosAssignment, MacosAssignmentIntent, MacosIntuneAppType } from './types';
 
 export const GRAPH_BETA = 'https://graph.microsoft.com/beta';
 const MOBILE_APPS = `${GRAPH_BETA}/deviceAppManagement/mobileApps`;
@@ -150,11 +150,54 @@ export class MacosGraphClient {
     return this.request('POST', `${fileUrl}/commit`, { fileEncryptionInfo: info }, 'Committing the content file');
   }
 
+  private assignmentsUrl(appId: string): string {
+    return `${MOBILE_APPS}/${encodeURIComponent(appId)}/assignments`;
+  }
+
+  async listAssignments(appId: string): Promise<Record<string, unknown>[]> {
+    const page: { value?: Record<string, unknown>[] } = await this.request(
+      'GET',
+      this.assignmentsUrl(appId),
+      undefined,
+      'Reading the app assignments'
+    );
+    return page.value || [];
+  }
+
+  /** Changes only the intent; target, filter and settings stay as they are. */
+  updateAssignmentIntent(appId: string, assignmentId: string, intent: MacosAssignmentIntent): Promise<void> {
+    return this.request(
+      'PATCH',
+      `${this.assignmentsUrl(appId)}/${encodeURIComponent(assignmentId)}`,
+      { '@odata.type': '#microsoft.graph.mobileAppAssignment', intent },
+      'Changing the assignment intent'
+    );
+  }
+
+  deleteAssignment(appId: string, assignmentId: string): Promise<void> {
+    return this.request(
+      'DELETE',
+      `${this.assignmentsUrl(appId)}/${encodeURIComponent(assignmentId)}`,
+      undefined,
+      'Removing the assignment'
+    );
+  }
+
+  async getGroupName(groupId: string): Promise<string | null> {
+    const group: { displayName?: unknown } = await this.request(
+      'GET',
+      `${GRAPH_BETA}/groups/${encodeURIComponent(groupId)}?$select=id,displayName`,
+      undefined,
+      'Reading the group'
+    );
+    return typeof group?.displayName === 'string' ? group.displayName : null;
+  }
+
   /** IntuneBrew Set-IntuneAppAssignment: one POST per group. */
   addAssignment(appId: string, assignment: MacosAssignment): Promise<void> {
     return this.request(
       'POST',
-      `${MOBILE_APPS}/${encodeURIComponent(appId)}/assignments`,
+      this.assignmentsUrl(appId),
       {
         '@odata.type': '#microsoft.graph.mobileAppAssignment',
         intent: assignment.intent,

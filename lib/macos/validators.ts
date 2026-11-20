@@ -44,6 +44,14 @@ export const macosDeploySchema = z
 
 export type MacosDeployRequest = z.infer<typeof macosDeploySchema>;
 
+export const MACOS_INTENT_ENUM = z.enum(['required', 'available', 'uninstall']);
+
+/** Graph mobileAppAssignment ids look like `<groupId>_<n>_<n>`. */
+export const ASSIGNMENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
+export const INTUNE_APP_ID_PATTERN = GUID;
+
+export const macosAssignmentIntentSchema = z.object({ intent: MACOS_INTENT_ENUM });
+
 // ---------------------------------------------------------------------------
 // Custom apps
 // ---------------------------------------------------------------------------

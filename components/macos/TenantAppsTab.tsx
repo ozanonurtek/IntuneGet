@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowUpCircle, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
+import { ArrowUpCircle, CheckCircle2, Loader2, RefreshCw, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dialog';
 import { StatusBadge } from '@/components/ui/status-badge';
 import type { MacosTenantApp } from '@/lib/macos/types';
+import { AssignmentsDialog } from './AssignmentsDialog';
 import { MacosAppIcon } from './CatalogTab';
 import { readApiError } from './format';
 import { useMacosApi } from './useMacosApi';
@@ -36,6 +37,7 @@ export function TenantAppsTab({ onQueued }: TenantAppsTabProps) {
   const [pending, setPending] = useState<MacosTenantApp | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [assigning, setAssigning] = useState<MacosTenantApp | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -147,7 +149,16 @@ export function TenantAppsTab({ onQueued }: TenantAppsTabProps) {
                         </StatusBadge>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3 text-right whitespace-nowrap space-x-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setAssigning(app)}
+                        className="text-text-secondary"
+                        aria-label={`Assignments of ${app.displayName}`}
+                      >
+                        <Users className="w-4 h-4" /> Assignments
+                      </Button>
                       {app.updateAvailable && app.updateSupported && (
                         <Button
                           size="sm"
@@ -171,6 +182,8 @@ export function TenantAppsTab({ onQueued }: TenantAppsTabProps) {
           </div>
         )
       )}
+
+      <AssignmentsDialog app={assigning} onOpenChange={(open) => !open && setAssigning(null)} />
 
       <Dialog open={pending !== null} onOpenChange={(open) => !open && !submitting && setPending(null)}>
         <DialogContent className="bg-bg-surface border-overlay/10">

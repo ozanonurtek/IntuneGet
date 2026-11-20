@@ -11,6 +11,23 @@ export interface MacosAssignment {
   intent: MacosAssignmentIntent;
 }
 
+export const MACOS_ASSIGNMENT_INTENTS: readonly MacosAssignmentIntent[] = ['available', 'required', 'uninstall'];
+
+/** What an existing Intune app assignment targets. */
+export type MacosAssignmentTargetKind = 'group' | 'excludedGroup' | 'allUsers' | 'allDevices' | 'other';
+
+/** An assignment that already exists on an Intune app (read from Graph). */
+export interface MacosAppAssignment {
+  id: string;
+  /** Graph intent; normally one of MacosAssignmentIntent. */
+  intent: string;
+  targetKind: MacosAssignmentTargetKind;
+  groupId: string | null;
+  groupName: string | null;
+  /** An assignment filter is set (shown, not edited here). */
+  hasFilter: boolean;
+}
+
 export interface MacosCatalogApp {
   id: string;
   name: string;
