@@ -74,6 +74,23 @@ export interface DeployResult {
   warnings: string[];
 }
 
+/**
+ * Azure Storage's error code and the first line of its message (never the request
+ * URL, which carries the SAS), e.g. "InvalidBlockList: The specified block list is invalid."
+ */
+export async function azureErrorDetail(response: Response): Promise<string> {
+  let body = '';
+  try {
+    body = (await response.text()).slice(0, 4096);
+  } catch {
+    // Body unreadable: fall back to the header.
+  }
+  const code = response.headers.get('x-ms-error-code') ?? body.match(/<Code>([^<]{1,100})<\/Code>/)?.[1] ?? '';
+  const message = (body.match(/<Message>([^<]{1,500})<\/Message>/)?.[1] ?? '').split(/\r?\n/)[0].trim();
+  const extra = body.match(/<(HeaderName|QueryParameterName|AuthenticationErrorDetail)>([^<]{1,200})<\/\1>/);
+  return [code, message, extra ? `${extra[1]}=${extra[2]}` : ''].filter(Boolean).join(': ').replace(/sig=[^&\s]+/gi, 'sig=REDACTED');
+}
+
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Fields IntuneBrew sends that describe the installer content and its version. */
@@ -291,9 +308,13 @@ export async function deployMacosApp(input: DeployInput, deps: UploadDeps): Prom
       for (let attempt = 1; attempt <= BLOCK_ATTEMPTS; attempt++) {
         if (now() - sas.obtainedAt >= SAS_RENEW_AFTER_MS) await renewSas();
         try {
+          // x-ms-blob-type belongs to Put Block only; Put Block List is sent without it,
+          // as the Microsoft Intune upload sample and IntuneBrew do.
+          const headers: Record<string, string> = { 'Content-Type': contentType };
+          if (query.startsWith('comp=block&')) headers['x-ms-blob-type'] = 'BlockBlob';
           const response = await fetchImpl(`${sas.uri}&${query}`, {
             method: 'PUT',
-            headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': contentType },
+            headers,
             body: typeof body === 'string' ? body : new Uint8Array(body.buffer as ArrayBuffer, body.byteOffset, body.byteLength),
             signal: AbortSignal.timeout(BLOCK_PUT_TIMEOUT_MS),
           });
@@ -301,8 +322,8 @@ export async function deployMacosApp(input: DeployInput, deps: UploadDeps): Prom
             await response.arrayBuffer().catch(() => undefined);
             return;
           }
-          await response.arrayBuffer().catch(() => undefined);
-          lastError = new Error(`${what} failed (HTTP ${response.status})`);
+          const detail = await azureErrorDetail(response);
+          lastError = new Error(`${what} failed (HTTP ${response.status}${detail ? `: ${detail}` : ''})`);
           if (response.status === 403) {
             // Usually an expired SAS on a long upload: renew and retry the same block.
             await renewSas();
